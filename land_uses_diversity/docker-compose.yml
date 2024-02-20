@@ -1,0 +1,10 @@
+version: "3"
+
+services:
+  app:
+    container_name: land_uses_diversity
+    build: .
+    volumes:
+      - ./temp:/app/temp
+    env_file:
+      - .env

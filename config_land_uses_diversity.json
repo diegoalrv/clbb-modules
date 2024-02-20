@@ -1,0 +1,7 @@
+{
+  "MODULE_NAME": "land_uses_diversity",
+  "SERVER_ADDRESS": "http://localhost:8080",
+  "REQUEST_DATA_ENDPOINT": "/request_data",
+  "UPLOAD_DATA_ENDPOINT": "/upload_data",
+  "REQUIREMENTS": ["pandas", "geopandas", "numpy", "requests"]
+}
