@@ -1,0 +1,14 @@
+version: "3"
+
+services:
+  app:
+    container_name: isocrone
+    build: .
+    env_file:
+      - .env
+    networks:
+      - clbb
+
+networks:
+  clbb:
+    external: true

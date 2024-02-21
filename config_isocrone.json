@@ -1,0 +1,7 @@
+{
+  "MODULE_NAME": "isocrone",
+  "SERVER_ADDRESS": "http://localhost:8080",
+  "REQUEST_DATA_ENDPOINT": "/api",
+  "UPLOAD_DATA_ENDPOINT": "/",
+  "REQUIREMENTS": ["requests", "pandas==1.5.3","scipy","numpy","geopandas","osmnx","networkx","pandana","osmnet","pyarrow"]
+}
