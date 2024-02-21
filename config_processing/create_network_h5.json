@@ -1,0 +1,8 @@
+{
+  "PROCESS_NAME": "create_network_h5",
+  "SERVER_ADDRESS": "http://clbb-api:8000",
+  "DOCKER_NETWORK": "clbb",
+  "REQUEST_DATA_ENDPOINT": "/api",
+  "UPLOAD_DATA_ENDPOINT": "/",
+  "REQUIREMENTS": ["requests", "pandas==1.5.3","scipy","numpy","geopandas","osmnx","networkx","pandana","osmnet","pyarrow"]
+}

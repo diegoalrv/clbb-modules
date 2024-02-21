@@ -31,6 +31,7 @@ fi
 # Leer el archivo de configuración JSON
 MODULE_NAME=$(jq -r '.MODULE_NAME' "$CONFIG_FILE")
 SERVER_ADDRESS=$(jq -r '.SERVER_ADDRESS' "$CONFIG_FILE")
+DOCKER_NETWORK=$(jq -r '.DOCKER_NETWORK' "$CONFIG_FILE")
 REQUEST_DATA_ENDPOINT=$(jq -r '.REQUEST_DATA_ENDPOINT' "$CONFIG_FILE")
 UPLOAD_DATA_ENDPOINT=$(jq -r '.UPLOAD_DATA_ENDPOINT' "$CONFIG_FILE")
 REQUIREMENTS=$(jq -r '.REQUIREMENTS | join("\n")' "$CONFIG_FILE")
@@ -138,15 +139,19 @@ services:
     build: .
     env_file:
       - .env
+    networks:
+      - $DOCKER_NETWORK
+
+networks:
+  $DOCKER_NETWORK:
+    external: true
 EOF
 
-# Crear el archivo .env para las variables de entorno como:
-# - server_address
-# - endpoint_to_request_data
-# - endpoint_to_upload_data
+# Crear el archivo .env para las variables de entorno
 touch .env
 echo "module_name=$MODULE_NAME" >> .env
 echo "server_address=$SERVER_ADDRESS" >> .env
+echo "DOCKER_NETWORK=$DOCKER_NETWORK" >> .env
 echo "endpoint_to_request_data=$REQUEST_DATA_ENDPOINT" >> .env
 echo "endpoint_to_upload_data=$UPLOAD_DATA_ENDPOINT" >> .env
 

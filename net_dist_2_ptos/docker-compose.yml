@@ -2,7 +2,7 @@ version: "3"
 
 services:
   app:
-    container_name: isocrone
+    container_name: net_dist_2_ptos
     build: .
     env_file:
       - .env

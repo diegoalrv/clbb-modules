@@ -2,7 +2,7 @@ version: "3"
 
 services:
   app:
-    container_name: isocrone
+    container_name: create_network_h5
     build: .
     env_file:
       - .env
