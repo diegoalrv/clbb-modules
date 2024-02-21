@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Obtener el directorio de trabajo actual
+CURRENT_DIR=$(pwd)
+
+echo "El directorio actual es: $CURRENT_DIR"
+
 # Parsear argumentos de entrada
 while [[ $# -gt 0 ]]; do
     key="$1"
