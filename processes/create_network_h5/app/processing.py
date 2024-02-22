@@ -110,7 +110,6 @@ class Processing:
     def process_data(self):
         # Proceso para procesar los datos
         self.net.save_hdf5(f'/app/{self.net_id}.h5')
-
         pass
     
     def export_data(self):
