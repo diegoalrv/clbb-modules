@@ -6,8 +6,12 @@ services:
     build: .
     env_file:
       - .env
+    volumes:
+      - tmp:/app/tmp    
     networks:
       - clbb
+volumes:
+  tmp:
 
 networks:
   clbb:

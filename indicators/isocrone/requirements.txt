@@ -9,13 +9,4 @@ pandana
 osmnet
 pyarrow
 shapely
-requests
-pandas==1.5.3
-scipy
-numpy
-geopandas
-osmnx
-networkx
-pandana
-osmnet
-pyarrow
+
