@@ -39,24 +39,6 @@ class Indicator():
         self.net = pdna.Network.from_hdf5(filename)
         pass
 
-    def load_data(self):
-        self.load_network()
-        pass
-
-    def get_nodes_from_distance(self):
-        max_distance = self.max_distance
-        endpoint = f'{self.base_url}/node/?lat={self.lat}&lon={self.lon}&distance={max_distance}'
-        data = requests.get(endpoint)
-        data_json = data.json()
-
-        features = data_json['features']
-        for feature in features:
-            feature['geometry'] = shapely.from_wkt(feature['geometry'].split(';')[1])
-            feature['properties']['osm_id'] = feature['id']
-        
-        self.nodes_gdf = gpd.GeoDataFrame.from_features(features, crs='EPSG:4326')
-        pass
-
     def load_env_variables(self):
         self.lat = os.getenv('lat', None)
         self.lon = os.getenv('lon', None)
@@ -71,6 +53,25 @@ class Indicator():
         self.max_distance = float(self.max_distance) if self.max_distance is not None else None
         self.speed = float(self.speed) if self.speed is not None else None
         self.time = float(self.time) if self.time is not None else None
+        pass
+
+    def load_data(self):
+        self.load_network()
+        self.load_env_variables()
+        pass
+
+    def get_nodes_from_distance(self):
+        max_distance = self.max_distance
+        endpoint = f'{self.base_url}/node/?lat={self.lat}&lon={self.lon}&distance={max_distance}'
+        data = requests.get(endpoint)
+        data_json = data.json()
+
+        features = data_json['features']
+        for feature in features:
+            feature['geometry'] = shapely.from_wkt(feature['geometry'].split(';')[1])
+            feature['properties']['osm_id'] = feature['id']
+        
+        self.nodes_gdf = gpd.GeoDataFrame.from_features(features, crs='EPSG:4326')
         pass
 
     def setup_filter_nodes(self):
@@ -120,16 +121,17 @@ class Indicator():
         for key, value in extras.items():
             self.df_paths[key] = value
         
+        length_filter = self.df_paths['path_lengths'] > self.max_distance
+        self.df_paths = self.df_paths[length_filter]
         pass
         
     def calculate(self):
-        self.load_env_variables()
         self.setup_filter_nodes()
         self.calculate_distance_to_nodes()
         print(self.df_paths)
         pass
 
-    def upload_to_database(self):
+    def upload_as_numeric_to_database(self):
         # URL del endpoint
         url = f'{self.server_address}/urban-indicators/numericindicator/'
 
@@ -177,9 +179,61 @@ class Indicator():
                 print(response.text)
                 pass
             pass
+
+    def upload_as_points_to_database(self):
+        # URL del endpoint
+        pointurl = f'{self.server_address}/urban-indicators/pointindicator/'
+        json_data = []
+
+        # Iterar sobre las filas del DataFrame
+        for index, row in self.df_paths.iterrows():
+            # Generar el indicador_hash
+            indicator_hash = generate_unique_code([
+                'isocrone',
+                str(self.center_node),
+                str(row['speed']),
+                str(row['max_distance']),
+                str(row['time']),
+            ])
+            geom = self.nodes_gdf.loc[self.nodes_gdf['osm_id']==row['source'], 'geometry']
+
+            # Crear el diccionario para el campo extra_properties
+            extra_properties = {
+                'source': int(row['source']),
+                'destination': int(row['destination']),
+                'speed': row['speed'],
+                'max_distance': row['max_distance'],
+                'time': row['time'],
+                'value_col': 'path_lengths',
+                'center_lat': self.lat,
+                'center_lon': self.lon,
+            }
+
+            # Agregar los datos al formato esperado
+            json_entry = {
+                'indicator_name': 'isocrone',
+                'indicator_hash': indicator_hash,
+                'value': row['path_lengths'],
+                'extra_properties': extra_properties,
+                'geo_field': shapely.Point(geom.x, geom.y).wkt
+            }
+
+            # Realizar la solicitud POST
+            response = requests.post(pointurl, json=json_entry)
+
+            # Verificar si la solicitud fue exitosa
+            if response.status_code == 201:
+                # print("Los datos se han subido correctamente.")
+                pass
+            else:
+                print("Error al subir los datos:", response.status_code)
+                print(response.text)
+                pass
+            pass
     
     def export_indicator(self):
-        self.upload_to_database()
+        # self.upload_as_numeric_to_database()
+        self.upload_as_points_to_database()
         pass
 
     def exec(self):
