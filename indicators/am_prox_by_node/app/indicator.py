@@ -148,6 +148,8 @@ class Indicator():
             df_out.append(df_paths)
         self.df_out = pd.concat(df_out)
         self.df_out.reset_index(inplace=True, drop=True)
+        self.df_out = pd.merge(self.df_out.rename(columns={'source':'osm_id'}), self.nodes_gdf[['osm_id','geometry']])
+        self.df_out = gpd.GeoDataFrame(data=self.df_out.drop(columns=['geometry']), geometry=self.df_out['geometry'])
         pass
     
     def calculate(self):
