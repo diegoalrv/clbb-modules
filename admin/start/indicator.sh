@@ -144,8 +144,13 @@ services:
     build: .
     env_file:
       - .env
+    volumes:
+      - tmp:/app/tmp
     networks:
       - $DOCKER_NETWORK
+
+volumes:
+  tmp:
 
 networks:
   $DOCKER_NETWORK:
@@ -154,9 +159,9 @@ EOF
 
 # Crear el archivo .env para las variables de entorno
 touch .env
-echo "module_name=$MODULE_NAME" >> .env
+echo "indicator_name=$MODULE_NAME" >> .env
 echo "server_address=$SERVER_ADDRESS" >> .env
-echo "DOCKER_NETWORK=$DOCKER_NETWORK" >> .env
+echo "docker_network=$DOCKER_NETWORK" >> .env
 echo "endpoint_to_request_data=$REQUEST_DATA_ENDPOINT" >> .env
 echo "endpoint_to_upload_data=$UPLOAD_DATA_ENDPOINT" >> .env
 
