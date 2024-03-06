@@ -9,7 +9,6 @@ import hashlib
 import json
 from shapely import wkt
 
-
 def generate_unique_code(strings):
     text = ''.join(strings)
     return hashlib.sha256(text.encode()).hexdigest()
@@ -32,14 +31,12 @@ class Indicator():
         filename = f'/app/tmp/net_{self.id_network}.h5'
         if not os.path.exists(filename):
             response = requests.get(endpoint)
-            # Verificar si la solicitud fue exitosa
             if response.status_code == 200:
-                # Guardar el contenido del archivo en un archivo local
                 with open(filename, 'wb') as f:
                     f.write(response.content)
-                print("¡Archivo h5 descargado exitosamente!")
+                print("¡h5 file successfully downloaded!")
             else:
-                print("Error al descargar el archivo h5:", response.text)
+                print("Error downloading h5 file:", response.text)
         self.net = pdna.Network.from_hdf5(filename)
         pass
 
@@ -72,13 +69,13 @@ class Indicator():
             self.area_of_interest = self.area_of_interest.set_crs(4326)
         pass
 
-
     def load_env_variables(self):
         def get_from_env(key):
             return os.getenv(key, None)
         
         def get_dict_env(key):
             s = get_from_env(key)
+            s = s.replace("""'""", '''"''')
             return json.loads(s)
         
         def cast_to_float(val):
@@ -119,12 +116,8 @@ class Indicator():
 
         nodes_destination = list(set(self.amenities['node_id']))
         count_nodes = len(nodes_destination)
-
         df_out = []
-        for index, row in sources.iterrows():
-            print(index)
-            print(len(sources))
-            print()
+        for index, row in sources.iterrows():                      
             nodes_sources = [row['osm_id']]*count_nodes
             path_lenghts = self.net.shortest_path_lengths(
                 nodes_sources,
@@ -146,8 +139,8 @@ class Indicator():
             df_paths.rename(columns={'node_id': 'destination'}, inplace=True)
             df_paths['source'] = row['osm_id']
             df_out.append(df_paths)
-        self.df_out = pd.concat(df_out)
-        self.df_out.reset_index(inplace=True, drop=True)
+
+        self.df_out = pd.concat(df_out).reset_index(drop=True)
         self.df_out = pd.merge(self.df_out.rename(columns={'source':'osm_id'}), self.nodes_gdf[['osm_id','geometry']])
         self.df_out = gpd.GeoDataFrame(data=self.df_out.drop(columns=['geometry']), geometry=self.df_out['geometry'])
         pass
@@ -160,27 +153,20 @@ class Indicator():
     def export_indicator(self):
         endpoint = f'{self.server_address}/urban-indicators/indicatordata/upload_to_table/'
 
-        # Datos que deseas enviar en la solicitud
         data = {
             'indicator_name': self.indicator_name,
             'indicator_hash': self.indicator_hash,
-            'table_name': self.indicator_hash,
+            'is_geo': True,
             'json_data': self.df_out.to_json(),
         }
 
-        # Convertir los datos a formato JSON
         json_data = json.dumps(data)
-
-        # Configuración de la solicitud
         headers = {'Content-Type': 'application/json'}
         response = requests.post(endpoint, headers=headers, data=json_data)
-        print(endpoint)
-        # Verificar el estado de la respuesta
         if response.status_code == 200:
-            print('Datos guardados exitosamente')
+            print('Data saved successfully')
         else:
-            print('Error al guardar los datos:', response.text)
-        # Enviar los datos a algún servidor o almacenarlos en algún lugar
+            print('Error saving data:', response.text)
         pass
 
     def exec(self):
