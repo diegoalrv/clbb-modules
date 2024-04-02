@@ -1,5 +1,5 @@
 requests
-pandas==1.5.3
+pandas
 scipy
 numpy
 geopandas

@@ -7,6 +7,7 @@ import requests
 import os
 import hashlib
 import json
+from glob import glob
 from shapely import wkt
 
 def generate_unique_code(strings):
@@ -21,14 +22,15 @@ class Indicator():
 
         self.server_address = os.getenv('server_address', 'http://localhost:8000')
         self.request_data_endpoint = os.getenv('request_data_endpoint', '/api')
-        self.id_network = os.getenv('id_roadnetwork', 1)
+        self.id_network = os.getenv('id_roadnetwork', 1) 
         
         self.base_url = f'{self.server_address}/{self.request_data_endpoint}'
         self.roadnetwork_url = f'{self.base_url}/roadnetwork'
     
     def load_network(self):
-        endpoint = f'{self.roadnetwork_url}/{self.id_network}/serve_h5_file/'
-        filename = f'/app/tmp/net_{self.id_network}.h5'
+        endpoint = f'{self.server_address}/{self.request_data_endpoint}/roadnetwork/{self.id_network}/serve_h5_file/'
+        filename = f'/app/tmp/{self.id_network}.h5'
+        print(glob('/app/tmp/*'))
         if not os.path.exists(filename):
             response = requests.get(endpoint)
             if response.status_code == 200:
@@ -117,7 +119,7 @@ class Indicator():
         nodes_destination = list(set(self.amenities['node_id']))
         count_nodes = len(nodes_destination)
         df_out = []
-        for index, row in sources.iterrows():                      
+        for index, row in sources.iterrows():
             nodes_sources = [row['osm_id']]*count_nodes
             path_lenghts = self.net.shortest_path_lengths(
                 nodes_sources,
