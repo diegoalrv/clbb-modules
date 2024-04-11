@@ -8,3 +8,4 @@ networkx
 pandana
 osmnet
 pyarrow
+clbb-hermes

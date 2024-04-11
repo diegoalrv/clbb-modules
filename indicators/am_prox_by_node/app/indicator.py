@@ -21,12 +21,10 @@ class Indicator():
         self.keywords = []
 
         self.server_address = os.getenv('server_address', 'http://localhost:8000')
-        self.request_data_endpoint = os.getenv('request_data_endpoint', '/api')
-        self.id_network = os.getenv('id_roadnetwork', 1) 
-        
-        self.base_url = f'{self.server_address}/{self.request_data_endpoint}'
-        self.roadnetwork_url = f'{self.base_url}/roadnetwork'
-    
+        self.request_data_endpoint = os.getenv('request_data_endpoint', 'api')
+        self.id_network = os.getenv('id_roadnetwork', 1)
+        self.id_project = os.getenv('id_project', 1)
+
     def load_network(self):
         endpoint = f'{self.server_address}/{self.request_data_endpoint}/roadnetwork/{self.id_network}/serve_h5_file/'
         filename = f'/app/tmp/{self.id_network}.h5'
@@ -44,7 +42,7 @@ class Indicator():
 
     def load_amenities(self):
         self.amenities = None
-        endpoint = f'{self.base_url}/amenity/'
+        endpoint = f'{self.server_address}/{self.request_data_endpoint}/amenity/'
         response = requests.get(endpoint)
         data = response.json()
         
@@ -60,15 +58,15 @@ class Indicator():
 
     def load_area_of_interest(self):
         self.area_of_interest = None
-        endpoint = f'{self.base_url}/areaofinterest/2/'
+        endpoint = f'{self.server_address}/{self.request_data_endpoint}/areaofinterest/2/'
         response = requests.get(endpoint)
         data = response.json()
-        if data['type'] == 'Feature':
-            geometries= [wkt.loads(data['geometry'].split(';')[-1])]
-            properties= [data['properties']]
+        # if data['type'] == 'Feature':
+        geometries= [wkt.loads(data['geometry'].split(';')[-1])]
+        properties= [data['properties']]
 
-            self.area_of_interest = gpd.GeoDataFrame(properties, geometry=geometries)
-            self.area_of_interest = self.area_of_interest.set_crs(4326)
+        self.area_of_interest = gpd.GeoDataFrame(properties, geometry=geometries)
+        self.area_of_interest = self.area_of_interest.set_crs(4326)
         pass
 
     def load_env_variables(self):
