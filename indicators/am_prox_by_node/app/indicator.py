@@ -9,6 +9,7 @@ import hashlib
 import json
 from glob import glob
 from shapely import wkt
+import hermes as hs
 
 def generate_unique_code(strings):
     text = ''.join(strings)
@@ -19,54 +20,26 @@ class Indicator():
         self.data = None
         self.indicator = None
         self.keywords = []
-
+        
         self.server_address = os.getenv('server_address', 'http://localhost:8000')
         self.request_data_endpoint = os.getenv('request_data_endpoint', 'api')
         self.id_network = os.getenv('id_roadnetwork', 1)
         self.id_project = os.getenv('id_project', 1)
 
+        self.h = hs.Handler()
+        self.h.server_address = self.server_address
+        pass
+
     def load_network(self):
-        endpoint = f'{self.server_address}/{self.request_data_endpoint}/roadnetwork/{self.id_network}/serve_h5_file/'
-        filename = f'/app/tmp/{self.id_network}.h5'
-        print(glob('/app/tmp/*'))
-        if not os.path.exists(filename):
-            response = requests.get(endpoint)
-            if response.status_code == 200:
-                with open(filename, 'wb') as f:
-                    f.write(response.content)
-                print("¡h5 file successfully downloaded!")
-            else:
-                print("Error downloading h5 file:", response.text)
-        self.net = pdna.Network.from_hdf5(filename)
+        self.net = self.h.load_network()
         pass
 
     def load_amenities(self):
-        self.amenities = None
-        endpoint = f'{self.server_address}/{self.request_data_endpoint}/amenity/'
-        response = requests.get(endpoint)
-        data = response.json()
-        
-        geometries = []
-        properties = []
-        for feature in data['features']:
-            geometries.append(wkt.loads(feature['geometry'].split(';')[-1]))
-            properties.append(feature['properties'])
-
-        self.amenities = gpd.GeoDataFrame(properties, geometry=geometries)
-        self.amenities.drop(columns=['tags'], inplace=True)
+        self.amenities = self.h.load_amenities()
         pass
 
     def load_area_of_interest(self):
-        self.area_of_interest = None
-        endpoint = f'{self.server_address}/{self.request_data_endpoint}/areaofinterest/2/'
-        response = requests.get(endpoint)
-        data = response.json()
-        # if data['type'] == 'Feature':
-        geometries= [wkt.loads(data['geometry'].split(';')[-1])]
-        properties= [data['properties']]
-
-        self.area_of_interest = gpd.GeoDataFrame(properties, geometry=geometries)
-        self.area_of_interest = self.area_of_interest.set_crs(4326)
+        self.area_of_interest = self.h.load_area_of_interest()
         pass
 
     def load_env_variables(self):
@@ -117,7 +90,7 @@ class Indicator():
         nodes_destination = list(set(self.amenities['node_id']))
         count_nodes = len(nodes_destination)
         df_out = []
-        for index, row in sources.iterrows():
+        for _, row in sources.iterrows():
             nodes_sources = [row['osm_id']]*count_nodes
             path_lenghts = self.net.shortest_path_lengths(
                 nodes_sources,
@@ -151,7 +124,8 @@ class Indicator():
         pass
     
     def export_indicator(self):
-        endpoint = f'{self.server_address}/urban-indicators/indicatordata/upload_to_table/'
+        # endpoint = f'{self.server_address}/urban-indicators/indicatordata/upload_to_table/'
+        endpoint = f'{self.server_address}/urban-indicators/indicatordata/update_indicator/'
 
         data = {
             'indicator_name': self.indicator_name,
