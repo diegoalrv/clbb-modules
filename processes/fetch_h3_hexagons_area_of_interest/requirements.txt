@@ -1,0 +1,6 @@
+h3
+geopandas
+contextily
+pandas
+pyarrow
+clbb-hermes
