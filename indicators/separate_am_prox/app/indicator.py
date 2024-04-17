@@ -19,7 +19,6 @@ class Indicator():
         
         self.server_address = os.getenv('server_address', 'http://localhost:8000')
         self.request_data_endpoint = os.getenv('request_data_endpoint', 'api')
-        self.id_network = os.getenv('id_roadnetwork', 1)
         self.id_project = os.getenv('id_project', 1)
 
         self.h = hs.Handler()
@@ -58,57 +57,30 @@ class Indicator():
         self.indicator_hash = self.generate_unique_code(strings)
         pass
 
-    def load_distances_paths(self):
+    def load_data_to_separate(self):
         print(self.indicator_hash)
-        return self.h.load_indicator_data('am_prox_by_node_points', self.indicator_hash)
+        indicator_to_separate = os.getenv('indicator_to_separate', None)
+        print(indicator_to_separate)
+        self.data = self.h.load_indicator_data(indicator_to_separate, self.indicator_hash)
+        print(self.data)
+        self.data.set_crs(4326, inplace=True)
+        pass
 
+    def extract_categories(self):
+        self.categories = list(self.data['category'].unique())
+        pass
+    
     def load_data(self):
-        self.net = self.h.load_network()
-        self.amenities = self.h.load_amenities()
-        self.area_of_interest = self.h.load_area_of_interest()
-        self.paths = self.load_distances_paths()
+        self.load_data_to_separate()
+        self.extract_categories()
         pass
     
-    def set_nodes_gdf(self):
-        from shapely.geometry import Point
-        df = self.net.nodes_df
-        geometry = [Point(xy) for xy in zip(df['x'], df['y'])]
-        self.nodes_gdf = gpd.GeoDataFrame(df, geometry=geometry)
-        self.nodes_gdf.reset_index(inplace=True)
-        self.nodes_gdf = self.nodes_gdf.set_crs(4326)
-        pass
-
-    def make_mesh_points(self):
-        poly = self.area_of_interest.copy()
-        poly.to_crs(32718, inplace=True)
-
-        x_spacing = int(os.getenv(x_spacing))
-        y_spacing = int(os.getenv(y_spacing))
-
-        xmin, ymin, xmax, ymax = poly.total_bounds #Find the bounds of all polygons in the poly
-        xcoords = [c for c in np.arange(xmin, xmax, x_spacing)] #Create x coordinates
-        ycoords = [c for c in np.arange(ymin, ymax, y_spacing)] #And y
-
-        coordinate_pairs = np.array(np.meshgrid(xcoords, ycoords)).T.reshape(-1, 2) #Create all combinations of xy coordinates
-        geometries = gpd.points_from_xy(coordinate_pairs[:,0], coordinate_pairs[:,1]) #Create a list of shapely points
-
-        pointpoly = gpd.GeoDataFrame(geometry=geometries, crs=poly.crs)
-        pointpoly = pointpoly.to_crs(4326)
-        self.mesh_points = pointpoly.copy()
-        self.mesh_points = gpd.overlay(self.mesh_points, self.area_of_interest)
-        self.mesh_points.drop(columns='name', inplace=True)
-        pass
-
-    def assign_node_to_points(self):
-        self.mesh_points['osm_id'] = self.net.get_node_ids(self.mesh_points['geometry'].x, self.mesh_points['geometry'].y)
-        self.df_out = pd.merge(self.mesh_points, self.paths[['osm_id','path_length', 'category', 'destination']], on='osm_id')
-        self.df_out = gpd.GeoDataFrame(data=self.df_out.drop(columns=['geometry']), geometry=self.df_out['geometry'])
-        pass
-    
-    def calculate(self):
-        self.set_nodes_gdf()
-        self.make_mesh_points()
-        self.assign_node_to_points()
+    def separate_and_export(self):
+        ind_name = os.getenv('indicator_to_separate', None)
+        for category in self.categories:
+            self.indicator_name = f'{ind_name}_{category}'
+            self.df_out = self.data[self.data['category']==category]
+            self.export_indicator()
         pass
     
     def export_indicator(self):
@@ -133,7 +105,6 @@ class Indicator():
 
     def exec(self):
         self.load_data()
-        self.calculate()
-        self.export_indicator()
+        self.separate_and_export()
         pass
 
