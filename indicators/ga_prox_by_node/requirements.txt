@@ -1,0 +1,11 @@
+requests
+pandas
+scipy
+numpy
+geopandas
+osmnx
+networkx
+pandana
+osmnet
+pyarrow
+clbb-hermes
