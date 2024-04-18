@@ -75,21 +75,16 @@ class Indicator():
         pass
 
     def calculate_between_nodes(self):
-        # print(self.ptos)
         self.ptos['node_id'] = self.net.get_node_ids(
             self.ptos['lon'],
             self.ptos['lat']
         )
-        # print(self.ptos)
 
         destination = self.ptos.loc[0, 'node_id']
         source = self.ptos.loc[1, 'node_id']
 
         path_route = self.net.shortest_path(source, destination)
         shortest_path_length = self.net.shortest_path_length(source, destination)
-        # paths = self.net.short
-        # print(path_route)
-        # print(shortest_path_length)
 
         self.df_paths = pd.DataFrame.from_dict({
             'source': source,
@@ -100,35 +95,28 @@ class Indicator():
         print(self.df_paths.loc[0,:].to_json())
     
     def calculate(self):
-        # Proceso para calcular el indicador
         self.calculate_between_nodes()
-        # self.indicator = indicator_calculated
         pass
     
     def export_indicator(self):
         endpoint = f'{self.server_address}/urban-indicators/indicatordata/upload_to_table/'
 
-        # Datos que deseas enviar en la solicitud
         data = {
             'indicator_name': self.indicator_name,
             'indicator_hash': self.indicator_hash,
-            'table_name': f'{self.indicator_hash}',
+            'is_geo': False,
             'json_data': self.df_paths.to_json(),
         }
 
-        # Convertir los datos a formato JSON
         json_data = json.dumps(data)
 
-        # Configuración de la solicitud
         headers = {'Content-Type': 'application/json'}
         response = requests.post(endpoint, headers=headers, data=json_data)
         print(endpoint)
-        # Verificar el estado de la respuesta
         if response.status_code == 200:
             print('Datos guardados exitosamente')
         else:
             print('Error al guardar los datos:', response.text)
-        # Enviar los datos a algún servidor o almacenarlos en algún lugar
         pass
 
     def exec(self):

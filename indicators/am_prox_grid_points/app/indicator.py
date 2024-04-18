@@ -11,10 +11,6 @@ from glob import glob
 from shapely import wkt
 import hermes as hs
 
-def generate_unique_code(strings):
-    text = ''.join(strings)
-    return hashlib.sha256(text.encode()).hexdigest()
-
 class Indicator():
     def __init__(self):
         self.data = None
@@ -28,19 +24,14 @@ class Indicator():
 
         self.h = hs.Handler()
         self.h.server_address = self.server_address
+
+        self.load_env_variables()
+        self.make_hash()
         pass
 
-    def load_network(self):
-        self.net = self.h.load_network()
-        pass
-
-    def load_amenities(self):
-        self.amenities = self.h.load_amenities()
-        pass
-
-    def load_area_of_interest(self):
-        self.area_of_interest = self.h.load_area_of_interest()
-        pass
+    def generate_unique_code(self, strings):
+        text = ''.join(strings)
+        return hashlib.sha256(text.encode()).hexdigest()
 
     def load_env_variables(self):
         def get_from_env(key):
@@ -60,17 +51,22 @@ class Indicator():
         self.project_name = get_from_env('project_name')        
         self.indicator_name = get_from_env('indicator_name')
         self.project_status = get_dict_env('project_status')
+    
+    def make_hash(self):
         strings = [self.project_name]
         [strings.append(f'{k}{v}') for k, v in self.project_status.items()]
-        text = ''.join(strings)
-        self.indicator_hash = hashlib.sha256(text.encode()).hexdigest()
+        self.indicator_hash = self.generate_unique_code(strings)
         pass
 
+    def load_distances_paths(self):
+        print(self.indicator_hash)
+        return self.h.load_indicator_data('am_prox_by_node_points', self.indicator_hash)
+
     def load_data(self):
-        self.load_env_variables()
-        self.load_network()
-        self.load_amenities()
-        self.load_area_of_interest()
+        self.net = self.h.load_network()
+        self.amenities = self.h.load_amenities()
+        self.area_of_interest = self.h.load_area_of_interest()
+        self.paths = self.load_distances_paths()
         pass
     
     def set_nodes_gdf(self):
@@ -82,45 +78,37 @@ class Indicator():
         self.nodes_gdf = self.nodes_gdf.set_crs(4326)
         pass
 
-    def calculate_distances_from_sources(self):
-        self.amenities['node_id'] = self.net.get_node_ids(self.amenities['geometry'].x, self.amenities['geometry'].y)
-        sources = gpd.overlay(self.nodes_gdf, self.area_of_interest)
-        sources = sources[['osm_id', 'x', 'y', 'geometry']]
+    def make_mesh_points(self):
+        poly = self.area_of_interest.copy()
+        poly.to_crs(32718, inplace=True)
 
-        nodes_destination = list(set(self.amenities['node_id']))
-        count_nodes = len(nodes_destination)
-        df_out = []
-        for _, row in sources.iterrows():
-            nodes_sources = [row['osm_id']]*count_nodes
-            path_lenghts = self.net.shortest_path_lengths(
-                nodes_sources,
-                nodes_destination
-            )
+        x_spacing = int(os.getenv(x_spacing))
+        y_spacing = int(os.getenv(y_spacing))
 
-            tmp = pd.DataFrame(
-                data={
-                'node_id': nodes_destination,
-                'path_length': path_lenghts
-                }
-            )
-            
-            df_paths = pd.merge(self.amenities, tmp, on='node_id')
-            df_paths = df_paths[['category', 'node_id', 'path_length']]
-            df_paths.drop_duplicates(inplace=True)
-            df__mins = df_paths[['category', 'path_length']].groupby(by=['category']).agg('min').reset_index()
-            df_paths = pd.merge(df__mins, df_paths, on=['category', 'path_length'])
-            df_paths.rename(columns={'node_id': 'destination'}, inplace=True)
-            df_paths['source'] = row['osm_id']
-            df_out.append(df_paths)
+        xmin, ymin, xmax, ymax = poly.total_bounds #Find the bounds of all polygons in the poly
+        xcoords = [c for c in np.arange(xmin, xmax, x_spacing)] #Create x coordinates
+        ycoords = [c for c in np.arange(ymin, ymax, y_spacing)] #And y
 
-        self.df_out = pd.concat(df_out).reset_index(drop=True)
-        self.df_out = pd.merge(self.df_out.rename(columns={'source':'osm_id'}), self.nodes_gdf[['osm_id','geometry']])
+        coordinate_pairs = np.array(np.meshgrid(xcoords, ycoords)).T.reshape(-1, 2) #Create all combinations of xy coordinates
+        geometries = gpd.points_from_xy(coordinate_pairs[:,0], coordinate_pairs[:,1]) #Create a list of shapely points
+
+        pointpoly = gpd.GeoDataFrame(geometry=geometries, crs=poly.crs)
+        pointpoly = pointpoly.to_crs(4326)
+        self.mesh_points = pointpoly.copy()
+        self.mesh_points = gpd.overlay(self.mesh_points, self.area_of_interest)
+        self.mesh_points.drop(columns='name', inplace=True)
+        pass
+
+    def assign_node_to_points(self):
+        self.mesh_points['osm_id'] = self.net.get_node_ids(self.mesh_points['geometry'].x, self.mesh_points['geometry'].y)
+        self.df_out = pd.merge(self.mesh_points, self.paths[['osm_id','path_length', 'category', 'destination']], on='osm_id')
         self.df_out = gpd.GeoDataFrame(data=self.df_out.drop(columns=['geometry']), geometry=self.df_out['geometry'])
         pass
     
     def calculate(self):
         self.set_nodes_gdf()
-        self.calculate_distances_from_sources()
+        self.make_mesh_points()
+        self.assign_node_to_points()
         pass
     
     def export_indicator(self):
