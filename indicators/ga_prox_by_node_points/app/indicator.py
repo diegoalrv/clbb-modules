@@ -17,7 +17,7 @@ class Indicator():
         self.indicator = None
         self.keywords = []
         
-        self.server_address = os.getenv('server_address', 'http://localhost:8000')
+        self.server_address = os.getenv('server_address', 'http://192.168.31.120:8001')
         self.id_project = os.getenv('id_project', 1)
 
         self.h = hs.Handler()
@@ -61,7 +61,17 @@ class Indicator():
         pass
 
     def load_green_areas(self):
-        self.green_areas = self.h.load_green_areas()
+        endpoint = f'{self.server_address}/api/greenarea/'
+        response = requests.get(endpoint)
+        data = response.json()
+        geometries = []
+        properties = []
+        for feature in data['features']:
+            geometries.append(wkt.loads(feature['geometry'].split(';')[-1]))
+            properties.append(feature['properties'])
+        self.green_areas = gpd.GeoDataFrame(properties, geometry=geometries)
+        self.green_areas.set_crs(4326, inplace=True)
+        # self.green_areas = self.h.load_green_areas()
         pass
 
     def load_area_of_interest(self):
@@ -69,7 +79,6 @@ class Indicator():
         pass
 
     def load_data(self):
-        self.load_env_variables()
         self.load_network()
         self.load_green_areas()
         self.load_area_of_interest()
@@ -85,18 +94,38 @@ class Indicator():
         pass
     
     def assign_nodes_to_green_area(self):
-        self.ga_node_set = []
-        for idx, row in self.green_areas.iterrows():
+        ga_node_set = []
+        for _, row in self.green_areas.iterrows():
             geom = row['geometry']
             contour = list(geom.exterior.coords)
+            points = pd.DataFrame(contour, columns=['x', 'y'])
+            points['name'] = row['name']
+            points['category'] = row['category']
+            points['node_id'] = self.net.get_node_ids(points['x'], points['y'])
+            ga_node_set.append(points)
+        self.ga_node_set = pd.concat(ga_node_set)
+        self.ga_node_set.drop_duplicates(subset=['category', 'node_id'], inplace=True)
+        self.ga_node_set.reset_index(inplace=True, drop=True)
         pass
 
-    def calculate_distances_from_sources(self):
-        self.amenities['node_id'] = self.net.get_node_ids(self.amenities['geometry'].x, self.amenities['geometry'].y)
+    def get_nodes_inside_greenareas(self):
+        nodes_inside_greenareas = gpd.overlay(self.nodes_gdf, self.green_areas)
+        cols = ['category', 'path_length', 'destination', 'osm_id', 'geometry']
+        nodes_inside_greenareas['path_length'] = 0
+        nodes_inside_greenareas['destination'] = nodes_inside_greenareas['osm_id']
+        self.nodes_inside_greenareas = nodes_inside_greenareas[cols]
+        pass
+
+    def get_sources_nodes(self):
         sources = gpd.overlay(self.nodes_gdf, self.area_of_interest)
         sources = sources[['osm_id', 'x', 'y', 'geometry']]
+        sources = sources[~sources['osm_id'].isin(self.nodes_inside_greenareas['osm_id'])]
+        return sources
 
-        nodes_destination = list(set(self.amenities['node_id']))
+    def calculate_distances_from_sources(self):
+        sources = self.get_sources_nodes()
+
+        nodes_destination = list(set(self.ga_node_set['node_id']))
         count_nodes = len(nodes_destination)
         df_out = []
         for _, row in sources.iterrows():
@@ -113,7 +142,7 @@ class Indicator():
                 }
             )
             
-            df_paths = pd.merge(self.amenities, tmp, on='node_id')
+            df_paths = pd.merge(self.ga_node_set, tmp, on='node_id')
             df_paths = df_paths[['category', 'node_id', 'path_length']]
             df_paths.drop_duplicates(inplace=True)
             df__mins = df_paths[['category', 'path_length']].groupby(by=['category']).agg('min').reset_index()
@@ -124,12 +153,19 @@ class Indicator():
 
         self.df_out = pd.concat(df_out).reset_index(drop=True)
         self.df_out = pd.merge(self.df_out.rename(columns={'source':'osm_id'}), self.nodes_gdf[['osm_id','geometry']])
+        pass
+
+    def concat_results(self):
+        self.df_out = pd.concat([self.df_out, self.nodes_inside_greenareas])
         self.df_out = gpd.GeoDataFrame(data=self.df_out.drop(columns=['geometry']), geometry=self.df_out['geometry'])
         pass
     
     def calculate(self):
         self.set_nodes_gdf()
+        self.assign_nodes_to_green_area()
+        self.get_nodes_inside_greenareas()
         self.calculate_distances_from_sources()
+        self.concat_results()
         pass
     
     def export_indicator(self):
@@ -157,4 +193,3 @@ class Indicator():
         self.calculate()
         self.export_indicator()
         pass
-
