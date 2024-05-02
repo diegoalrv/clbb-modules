@@ -12,7 +12,7 @@ class Processing:
     # Init
     def __init__(self):
         self.load_env_variables()
-        self.start_handler()
+        # self.start_handler()
         self.load_data()
         self.cols = ['name', 'dist_type', 'code', 'level', 'geometry']
         pass
@@ -31,7 +31,23 @@ class Processing:
         pass
     
     def load_data(self):
-        self.area = self.h.load_area_of_interest()
+        # self.area = self.h.load_area_of_interest()
+        self.load_area_of_interest()
+        pass
+
+    def load_area_of_interest(self, id=1):
+        from shapely import wkt
+        area_of_interest = None
+        endpoint = f'{self.server_address}/api/areaofinterest/1/'
+        response = requests.get(endpoint)
+        print(response.status_code)
+        data = response.json()
+        print(data)
+        geometries= [wkt.loads(data['geometry'].split(';')[-1])]
+        properties= [data['properties']]
+        area_of_interest = gpd.GeoDataFrame(properties, geometry=geometries)
+        area_of_interest = area_of_interest.set_crs(4326)
+        self.area = area_of_interest
         pass
 
     ############################################################
