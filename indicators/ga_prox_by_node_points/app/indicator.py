@@ -18,7 +18,6 @@ class Indicator():
         self.keywords = []
         
         self.server_address = os.getenv('server_address', 'http://192.168.31.120:8001')
-        self.id_project = os.getenv('id_project', 1)
 
         self.h = hs.Handler()
         self.h.server_address = self.server_address
@@ -49,6 +48,7 @@ class Indicator():
         self.project_name = get_from_env('project_name')        
         self.indicator_name = get_from_env('indicator_name')
         self.project_status = get_dict_env('project_status')
+        pass
             
     def make_hash(self):
         strings = [self.project_name]
@@ -57,21 +57,22 @@ class Indicator():
         pass
 
     def load_network(self):
-        self.net = self.h.load_network()
+        id_network = int(os.getenv('network_id', None))
+        self.net = self.h.load_network(id_network=id_network)
         pass
 
     def load_green_areas(self):
-        endpoint = f'{self.server_address}/api/greenarea/'
-        response = requests.get(endpoint)
-        data = response.json()
-        geometries = []
-        properties = []
-        for feature in data['features']:
-            geometries.append(wkt.loads(feature['geometry'].split(';')[-1]))
-            properties.append(feature['properties'])
-        self.green_areas = gpd.GeoDataFrame(properties, geometry=geometries)
-        self.green_areas.set_crs(4326, inplace=True)
-        # self.green_areas = self.h.load_green_areas()
+        # endpoint = f'{self.server_address}/api/greenarea/'
+        # response = requests.get(endpoint)
+        # data = response.json()
+        # geometries = []
+        # properties = []
+        # for feature in data['features']:
+        #     geometries.append(wkt.loads(feature['geometry'].split(';')[-1]))
+        #     properties.append(feature['properties'])
+        # self.green_areas = gpd.GeoDataFrame(properties, geometry=geometries)
+        # self.green_areas.set_crs(4326, inplace=True)
+        self.green_areas = self.h.load_green_areas()
         pass
 
     def load_area_of_interest(self):

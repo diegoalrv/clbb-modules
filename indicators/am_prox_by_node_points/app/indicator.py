@@ -22,24 +22,12 @@ class Indicator():
         self.keywords = []
         
         self.server_address = os.getenv('server_address', 'http://localhost:8000')
-        self.request_data_endpoint = os.getenv('request_data_endpoint', 'api')
-        self.id_network = os.getenv('id_roadnetwork', 1)
-        self.id_project = os.getenv('id_project', 1)
 
         self.h = hs.Handler()
         self.h.server_address = self.server_address
-        pass
 
-    def load_network(self):
-        self.net = self.h.load_network()
-        pass
-
-    def load_amenities(self):
-        self.amenities = self.h.load_amenities()
-        pass
-
-    def load_area_of_interest(self):
-        self.area_of_interest = self.h.load_area_of_interest()
+        self.load_env_variables()
+        self.make_hash()
         pass
 
     def load_env_variables(self):
@@ -60,14 +48,32 @@ class Indicator():
         self.project_name = get_from_env('project_name')        
         self.indicator_name = get_from_env('indicator_name')
         self.project_status = get_dict_env('project_status')
+        pass
+
+    def generate_unique_code(self, strings):
+        text = ''.join(strings)
+        return hashlib.sha256(text.encode()).hexdigest()
+    
+    def make_hash(self):
         strings = [self.project_name]
         [strings.append(f'{k}{v}') for k, v in self.project_status.items()]
-        text = ''.join(strings)
-        self.indicator_hash = hashlib.sha256(text.encode()).hexdigest()
+        self.indicator_hash = self.generate_unique_code(strings)
+        pass
+
+    def load_network(self):
+        id_network = int(os.getenv('network_id', None))
+        self.net = self.h.load_network(id_network=id_network)
+        pass
+
+    def load_amenities(self):
+        self.amenities = self.h.load_amenities()
+        pass
+
+    def load_area_of_interest(self):
+        self.area_of_interest = self.h.load_area_of_interest()
         pass
 
     def load_data(self):
-        self.load_env_variables()
         self.load_network()
         self.load_amenities()
         self.load_area_of_interest()

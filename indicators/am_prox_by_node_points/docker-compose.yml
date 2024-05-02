@@ -2,7 +2,7 @@ version: "3"
 
 services:
   app:
-    container_name: ga_prox_by_node_points
+    container_name: am_prox_by_node_points
     build: .
     env_file:
       - .env

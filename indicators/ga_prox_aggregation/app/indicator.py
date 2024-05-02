@@ -10,7 +10,9 @@ import json
 from glob import glob
 from shapely import wkt
 import hermes as hs
+import warnings
 
+warnings.filterwarnings('ignore')
 class Indicator():
     def __init__(self):
         self.data = None
@@ -19,7 +21,6 @@ class Indicator():
         
         self.server_address = os.getenv('server_address', 'http://localhost:8000')
         self.request_data_endpoint = os.getenv('request_data_endpoint', 'api')
-        self.id_network = os.getenv('id_roadnetwork', 1)
         self.id_project = os.getenv('id_project', 1)
 
         self.h = hs.Handler()
@@ -58,57 +59,54 @@ class Indicator():
         self.indicator_hash = self.generate_unique_code(strings)
         pass
 
-    def load_distances_paths(self):
+    def load_data_to_aggregate(self):
         print(self.indicator_hash)
-        return self.h.load_indicator_data('ga_prox_by_node_points', self.indicator_hash)
-
-    def load_data(self):
-        self.net = self.h.load_network()
-        self.amenities = self.h.load_amenities()
-        self.area_of_interest = self.h.load_area_of_interest()
-        self.paths = self.load_distances_paths()
+        indicator_to_aggregate = os.getenv('indicator_to_aggregate', None)
+        self.data = self.h.load_indicator_data(indicator_to_aggregate, self.indicator_hash)
+        self.data.set_crs(4326, inplace=True)
         pass
     
-    def set_nodes_gdf(self):
-        from shapely.geometry import Point
-        df = self.net.nodes_df
-        geometry = [Point(xy) for xy in zip(df['x'], df['y'])]
-        self.nodes_gdf = gpd.GeoDataFrame(df, geometry=geometry)
-        self.nodes_gdf.reset_index(inplace=True)
-        self.nodes_gdf = self.nodes_gdf.set_crs(4326)
+    def load_aggregation_polys(self, dist_type=None, level=None):
+        endpoint = f'{self.server_address}/api/discretedistribution/'
+        response = requests.get(endpoint)
+        data = response.json()
+        geometries = []
+        properties = []
+        for feature in data['features']:
+            geometries.append(wkt.loads(feature['geometry'].split(';')[-1]))
+            properties.append(feature['properties'])
+        gdf = gpd.GeoDataFrame(properties, geometry=geometries)
+        mask = [True]*len(gdf)
+        level = int(os.getenv('resolution', '10'))
+        dist_type = os.getenv('aggregation_unit', 'h3')
+        if level : mask &= gdf['level']==level
+        if dist_type : mask &= gdf['dist_type']==dist_type
+        print('level')
+        print(level)
+        self.unit = gdf[mask]
+        self.unit.set_crs(4326, inplace=True)
+        pass
+    
+    def load_data(self):
+        self.area_of_interest = self.h.load_area_of_interest(id=2)
+        self.load_data_to_aggregate()
+        self.load_aggregation_polys() 
         pass
 
-    def make_mesh_points(self):
-        poly = self.area_of_interest.copy()
-        poly.to_crs(32718, inplace=True)
-
-        x_spacing = int(os.getenv('x_spacing', 20))
-        y_spacing = int(os.getenv('y_spacing', 20))
-
-        xmin, ymin, xmax, ymax = poly.total_bounds #Find the bounds of all polygons in the poly
-        xcoords = [c for c in np.arange(xmin, xmax, x_spacing)] #Create x coordinates
-        ycoords = [c for c in np.arange(ymin, ymax, y_spacing)] #And y
-
-        coordinate_pairs = np.array(np.meshgrid(xcoords, ycoords)).T.reshape(-1, 2) #Create all combinations of xy coordinates
-        geometries = gpd.points_from_xy(coordinate_pairs[:,0], coordinate_pairs[:,1]) #Create a list of shapely points
-
-        pointpoly = gpd.GeoDataFrame(geometry=geometries, crs=poly.crs)
-        pointpoly = pointpoly.to_crs(4326)
-        self.mesh_points = pointpoly.copy()
-        self.mesh_points = gpd.overlay(self.mesh_points, self.area_of_interest)
-        self.mesh_points.drop(columns='name', inplace=True)
+    def aggregate_data(self):
+        data_hex = gpd.sjoin(self.data, self.unit[['code', 'geometry']])
+        data_hex_group = data_hex[['code', 'category', 'path_length']].groupby(['code', 'category']).agg('mean').reset_index()
+        data_hex_geo = pd.merge(data_hex_group, self.unit[['code', 'geometry']], on='code')
+        self.df_out = gpd.GeoDataFrame(data_hex_geo, geometry='geometry')
         pass
 
-    def assign_node_to_points(self):
-        self.mesh_points['osm_id'] = self.net.get_node_ids(self.mesh_points['geometry'].x, self.mesh_points['geometry'].y)
-        self.df_out = pd.merge(self.mesh_points, self.paths[['osm_id','path_length', 'category', 'destination']], on='osm_id')
-        self.df_out = gpd.GeoDataFrame(data=self.df_out.drop(columns=['geometry']), geometry=self.df_out['geometry'])
+    def filter_data(self):
+        self.df_out = gpd.overlay(self.df_out, self.area_of_interest)
         pass
     
     def calculate(self):
-        self.set_nodes_gdf()
-        self.make_mesh_points()
-        self.assign_node_to_points()
+        self.aggregate_data()
+        self.filter_data()
         pass
     
     def export_indicator(self):
