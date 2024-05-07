@@ -110,8 +110,8 @@ class Indicator():
         pass
     
     def export_indicator(self):
-        # endpoint = f'{self.server_address}/urban-indicators/indicatordata/upload_to_table/'
-        endpoint = f'{self.server_address}/urban-indicators/indicatordata/update_indicator/'
+        endpoint = f'{self.server_address}/urban-indicators/indicatordata/upload_to_table/'
+        # endpoint = f'{self.server_address}/urban-indicators/indicatordata/update_indicator/'
 
         data = {
             'indicator_name': self.indicator_name,
