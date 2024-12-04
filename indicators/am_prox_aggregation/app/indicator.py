@@ -21,7 +21,6 @@ class Indicator():
         
         self.server_address = os.getenv('server_address', 'http://localhost:8000')
         self.request_data_endpoint = os.getenv('request_data_endpoint', 'api')
-        self.id_project = os.getenv('id_project', 1)
 
         self.h = hs.Handler()
         self.h.server_address = self.server_address
@@ -88,7 +87,7 @@ class Indicator():
         pass
     
     def load_data(self):
-        self.area_of_interest = self.h.load_area_of_interest(id=2)
+        self.area_of_interest = self.h.load_area_of_interest()
         self.load_data_to_aggregate()
         self.load_aggregation_polys() 
         pass
@@ -103,10 +102,19 @@ class Indicator():
     def filter_data(self):
         self.df_out = gpd.overlay(self.df_out, self.area_of_interest)
         pass
+
+    def add_travel_time(self):
+        self.speed = float(os.getenv('speed', 4.5))
+
+        speed_m_per_min = self.speed * 1000 / 60
+        
+        self.df_out['travel_time'] = self.df_out['path_length'] / speed_m_per_min
+        pass
     
     def calculate(self):
         self.aggregate_data()
         self.filter_data()
+        self.add_travel_time()
         pass
     
     def export_indicator(self):
