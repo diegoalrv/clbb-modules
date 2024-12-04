@@ -19,8 +19,6 @@ class Indicator():
         
         self.server_address = os.getenv('server_address', 'http://localhost:8000')
         self.request_data_endpoint = os.getenv('request_data_endpoint', 'api')
-        self.id_network = os.getenv('id_roadnetwork', 1)
-        self.id_project = os.getenv('id_project', 1)
 
         self.h = hs.Handler()
         self.h.server_address = self.server_address
@@ -60,11 +58,15 @@ class Indicator():
 
     def load_distances_paths(self):
         print(self.indicator_hash)
-        return self.h.load_indicator_data('am_prox_by_node_points', self.indicator_hash)
+        base_indicator=os.getenv('base_indicator', None)
+        return self.h.load_indicator_data(base_indicator, self.indicator_hash)
+
+    def load_network(self):
+        id_network = int(os.getenv('network_id', None))
+        return self.h.load_network(id_network=id_network)
 
     def load_data(self):
-        self.net = self.h.load_network()
-        self.amenities = self.h.load_amenities()
+        self.net = self.load_network()
         self.area_of_interest = self.h.load_area_of_interest()
         self.paths = self.load_distances_paths()
         pass
@@ -82,8 +84,8 @@ class Indicator():
         poly = self.area_of_interest.copy()
         poly.to_crs(32718, inplace=True)
 
-        x_spacing = int(os.getenv(x_spacing))
-        y_spacing = int(os.getenv(y_spacing))
+        x_spacing = int(os.getenv('x_spacing'))
+        y_spacing = int(os.getenv('y_spacing'))
 
         xmin, ymin, xmax, ymax = poly.total_bounds #Find the bounds of all polygons in the poly
         xcoords = [c for c in np.arange(xmin, xmax, x_spacing)] #Create x coordinates
@@ -101,14 +103,69 @@ class Indicator():
 
     def assign_node_to_points(self):
         self.mesh_points['osm_id'] = self.net.get_node_ids(self.mesh_points['geometry'].x, self.mesh_points['geometry'].y)
-        self.df_out = pd.merge(self.mesh_points, self.paths[['osm_id','path_length', 'category', 'destination']], on='osm_id')
-        self.df_out = gpd.GeoDataFrame(data=self.df_out.drop(columns=['geometry']), geometry=self.df_out['geometry'])
+        # self.df_out = pd.merge(self.mesh_points, self.paths[['osm_id','path_length', 'category', 'destination']], on='osm_id')
+        # self.df_out = gpd.GeoDataFrame(data=self.df_out.drop(columns=['geometry']), geometry=self.df_out['geometry'])
+        pass
+
+    def calculate_distance_to_nodes(self):
+        # Convertimos los nodos a GeoDataFrame si aún no están convertidos
+        if not isinstance(self.nodes_gdf, gpd.GeoDataFrame):
+            self.set_nodes_gdf()
+
+        self.nodes_gdf = self.nodes_gdf.to_crs(32718)
+        self.mesh_points = self.mesh_points.to_crs(32718)
+
+        # Asociamos cada punto de la malla con su respectivo nodo para calcular la distancia
+        self.mesh_points = self.mesh_points.merge(self.nodes_gdf[['osm_id', 'geometry']], on='osm_id', how='left', suffixes=('', '_node'))
+
+        # Calculamos la distancia entre el punto de la malla y el nodo asignado
+        self.mesh_points['distance_to_closest_node'] = self.mesh_points.apply(
+            lambda row: row['geometry'].distance(row['geometry_node']),
+            axis=1
+        )
+
+        # Limpiamos el DataFrame eliminando la geometría del nodo
+        self.mesh_points.drop(columns=['geometry_node'], inplace=True)
+
+        self.nodes_gdf = self.nodes_gdf.to_crs(4326)
+        self.mesh_points = self.mesh_points.to_crs(4326)
+        pass
+
+    def merge_with_paths_and_calculate_total_distance(self):
+        # Realizamos el merge entre los mesh_points y los paths usando 'osm_id'
+        self.df_out = pd.merge(self.mesh_points, self.paths[['osm_id', 'path_length', 'category', 'destination']], on='osm_id')
+
+        # Calculamos la distancia total como la suma de la distancia al nodo más cercano y la longitud del camino
+        self.df_out['path_length'] = self.df_out['distance_to_closest_node'] + self.df_out['path_length']
+        pass    
+    
+    def filter_columns(self):
+        cols = ['osm_id', 'distance_to_closest_node', 'path_length', 'category', 'destination', 'geometry']
+        self.df_out = self.df_out[cols]
+        self.df_out['hash'] = self.indicator_hash
         pass
     
+    def to_geodataframe(self):
+        self.df_out = gpd.GeoDataFrame(data=self.df_out.drop(columns=['geometry']), geometry=self.df_out['geometry'])
+        pass
+
+    def add_travel_time(self):
+        self.speed = float(os.getenv('speed', 4.5))
+
+        speed_m_per_min = self.speed * 1000 / 60
+        
+        self.df_out['travel_time'] = self.df_out['path_length'] / speed_m_per_min
+        pass
+
     def calculate(self):
         self.set_nodes_gdf()
         self.make_mesh_points()
         self.assign_node_to_points()
+        self.calculate_distance_to_nodes()
+        self.merge_with_paths_and_calculate_total_distance()
+        self.filter_columns()
+        self.to_geodataframe()
+        self.add_travel_time()
         pass
     
     def export_indicator(self):

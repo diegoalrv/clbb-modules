@@ -123,10 +123,19 @@ class Indicator():
         self.df_out = pd.merge(self.df_out.rename(columns={'source':'osm_id'}), self.nodes_gdf[['osm_id','geometry']])
         self.df_out = gpd.GeoDataFrame(data=self.df_out.drop(columns=['geometry']), geometry=self.df_out['geometry'])
         pass
+
+    def add_travel_time(self):
+        self.speed = float(os.getenv('speed', 4.5))
+
+        speed_m_per_min = self.speed * 1000 / 60
+        
+        self.df_out['travel_time'] = self.df_out['path_length'] / speed_m_per_min
+        pass
     
     def calculate(self):
         self.set_nodes_gdf()
         self.calculate_distances_from_sources()
+        self.add_travel_time()
         pass
     
     def export_indicator(self):
