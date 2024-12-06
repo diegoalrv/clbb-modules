@@ -4,6 +4,7 @@ import pandas as pd
 import os
 import requests
 import json
+import numpy as np
 from shapely import wkb
 from shapely.geometry import Polygon
 
@@ -11,15 +12,15 @@ class Processing:
     # Init
     def __init__(self):
         self.load_env_variables()
-        self.cols = ['code', 'name', 'dist_type', 'level', 'geometry']
         pass
     
     ############################################################
     # Loaders    
     def load_env_variables(self):
-        self.resolution = int(os.getenv('resolution', 1))
         self.server_address = os.getenv('server_address', 'http://localhost:8000')
         self.zone = int(os.getenv('zone', 1))
+        self.x_spacing = int(os.getenv('x_spacing', 50))
+        self.y_spacing = int(os.getenv('y_spacing', 50))
         self.geo_output = os.getenv('geo_output', 'False') == 'True'
         pass
 
@@ -47,43 +48,54 @@ class Processing:
 
     ############################################################
     # Methods
-    def get_h3_cells_from_area(self):
-        h3shape = h3.geo_to_h3shape(self.area.geometry[0].__geo_interface__)
-        cells = h3.h3shape_to_cells(h3shape, self.resolution)
-        all_cells = pd.Series(cells)
-        all_cells = pd.DataFrame(cells, index=cells)
-        all_cells = pd.DataFrame(all_cells).reset_index().rename(columns={'index': 'code'})
-        
-        def h3_to_polygon(code):
-            boundary = h3.cell_to_boundary(code)
-            boundary = [(lat, lon) for lon, lat in boundary]
-            return Polygon(boundary)
+    def make_grid_points_gdf(self, gdf: gpd.GeoDataFrame, x_spacing, y_spacing) -> gpd.GeoDataFrame:
+        gdf = gdf.copy()
+        gdf.set_crs(4326, inplace=True)
+        gdf.to_crs(32718, inplace=True)
 
-        all_cells['geometry'] = all_cells['code'].apply(h3_to_polygon)
-        all_cells = gpd.GeoDataFrame(all_cells, geometry='geometry')
-        self.all_polys = all_cells
-        pass
+        xmin, ymin, xmax, ymax = gdf.total_bounds
+        xcoords = [c for c in np.arange(xmin, xmax, x_spacing)]
+        ycoords = [c for c in np.arange(ymin, ymax, y_spacing)]
+
+        coordinate_pairs = np.array(np.meshgrid(xcoords, ycoords)).T.reshape(-1, 2)
+        geometries = gpd.points_from_xy(coordinate_pairs[:,0], coordinate_pairs[:,1])
+
+        pointdf = gpd.GeoDataFrame(geometry=geometries, crs=gdf.crs)
+        pointdf.set_crs(32718)
+        pointdf.to_crs(4326, inplace=True)
+        return pointdf
+    
+    def get_grid_points_from_area(self, area: gpd.GeoDataFrame, x_spacing: int, y_spacing: int) -> gpd.GeoDataFrame:
+        grid_points = self.make_grid_points_gdf(area, x_spacing, y_spacing)
+        grid_points = gpd.overlay(grid_points, area)
+        
+        del grid_points['id']
+        grid_points.reset_index(inplace=True)
+        grid_points['id'] = grid_points['index']
+        grid_points.set_index('id', drop=False, inplace=True)
+        del grid_points['index']
+        grid_points = grid_points[['id', 'geometry']]
+
+        return grid_points
 
     def adjust_backend_format(self):
-        self.all_polys['name'] = f'h3-{self.resolution}'
-        self.all_polys['dist_type'] = 'h3'
-        self.all_polys['level'] = int(self.resolution)
-        self.all_polys = self.all_polys[self.cols]
-
         # UserWarning: Geometry column does not contain geometry.
         # this code will generate that warning but is totally normal, the column
         # is for geometry data, but here we make it str in order to serialize it
         # also in case of uploading to database, postgres receives the geometry's wkt as string and automatically converts to wkb
-        if not self.geo_output:    
-            self.all_polys['wkb']= self.all_polys['geometry'].apply(lambda g: g.wkb.hex())
-            del self.all_polys['geometry']
+        if not self.geo_output:
+            self.grid_points['wkb']= self.grid_points['geometry'].apply(lambda g: g.wkb.hex())
+            del self.grid_points['geometry']
+            self.grid_points = self.grid_points[['id', 'wkb']]
+        else:
+            self.grid_points = self.grid_points[['id', 'geometry']]
         pass
 
     ############################################################
     
     def execute_process(self):
         print('execute_process')
-        self.get_h3_cells_from_area()
+        self.grid_points = self.get_grid_points_from_area(self.area, self.x_spacing, self.y_spacing)
         self.adjust_backend_format()
         pass
 
@@ -92,13 +104,13 @@ class Processing:
     def export_data(self):
         print('export_data')
 
-        output_path = f'/usr/src/app/shared/zone_{self.zone}/h3_cells/resolution_{self.resolution}{"_geo" if self.geo_output else ""}.json'
+        output_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}{"_geo" if self.geo_output else ""}.json'
 
         if self.geo_output:
-            df_json_str = self.all_polys.to_json(indent=4)
-            # df_json = json.loads(df_json_str) for posting with arg json=df_json
+            df_json_str = self.grid_points.to_json(indent=4)
+            # df_json = json.loads(df_json_str) for posting with arg json=df_geojson
         else:
-            df_json = list(self.all_polys.T.to_dict().values())
+            df_json = list(self.grid_points.T.to_dict().values())
             df_json_str = json.dumps(df_json, indent=4)
             
         output_dir = os.path.dirname(output_path)
@@ -108,7 +120,7 @@ class Processing:
         with open(output_path, "w") as file:
             file.write(df_json_str)
 
-        # url = f'{self.server_address}/api/discretedistribution/add/'
+        # url = f'{self.server_address}/api/discretedistribution/add/'    
         # headers = {'Content-Type': 'application/json'}
         # r = requests.post(url, json=df_json, headers=headers)
         # print(r.status_code)

@@ -1,0 +1,9 @@
+numpy<2.0
+pandas
+geopandas
+pandana
+osmnx
+h3
+shapely
+requests
+pyarrow

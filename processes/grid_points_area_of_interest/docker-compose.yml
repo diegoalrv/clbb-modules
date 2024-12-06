@@ -1,6 +1,6 @@
 services:
   app:
-    container_name: fetch_h3_data
+    container_name: create_grid_points
     build: .
     env_file:
       - .env

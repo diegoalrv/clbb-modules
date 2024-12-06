@@ -1,6 +1,6 @@
 services:
   app:
-    container_name: land_uses_diversity
+    container_name: proximity_bus_stops
     build: .
     env_file:
       - .env
