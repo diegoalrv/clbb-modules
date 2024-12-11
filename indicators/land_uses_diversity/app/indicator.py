@@ -153,6 +153,9 @@ class Indicator():
 
         missing_hexs = h3_cells.loc[~h3_cells[hex_col].isin(gdf_diversity[hex_col]), [hex_col, 'geometry']]
         missing_hexs['diversity'] = 0
+        missing_hexs['name'] = f'h3-{self.resolution}'
+        missing_hexs['dist_type'] = 'h3'
+        missing_hexs['level'] = 10
 
         print('l')
         ########################################################
@@ -191,12 +194,13 @@ class Indicator():
         # df_json = json.loads(df_json)
         print('a')
 
-        output_path = f'/usr/src/app/shared/zone{self.zone}/land_uses_diversity/result{self.result}{"_geo" if self.geo_output else ""}.json'
+        output_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/result{self.result}{"_geo" if self.geo_output else ""}.json'
 
         if self.geo_output:
             df_json_str = self.indicator.to_json(indent=4)
             df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
         else:
+            print(self.indicator.columns)
             df_json = list(self.indicator.T.to_dict().values())
             df_json_str = json.dumps(df_json, indent=4)
         print('b')
@@ -211,11 +215,11 @@ class Indicator():
 
         print('d')
         if not self.local:
-            url = f'{self.server_address}/api/result/{self.result}/set_data/'
-            headers = {'Content-Type': 'application/json'}
-
             try:
-                requests.post(url, json=df_json, headers=headers)
+                url = f'{self.server_address}/api/result/{self.result}/set_data/'
+                headers = {'Content-Type': 'application/json'}
+                r = requests.post(url, json=df_json, headers=headers, timeout=20)
+                print(r.status_code)
             except Exception as e:
                 print('exporting data exception:', e)
     

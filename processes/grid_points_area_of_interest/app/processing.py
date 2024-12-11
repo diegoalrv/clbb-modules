@@ -26,6 +26,30 @@ class Processing:
 
     def load_data(self):
         print('load_data')
+
+        output_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}{"_geo" if self.geo_output else ""}.json'
+
+        if os.path.exists(output_path):
+            print(f"El archivo {output_path} ya existe.")
+        else:
+            print(f"El archivo {output_path} no existe.")
+        
+        print()
+        output_dir = os.path.dirname(output_path)
+        if os.path.exists(output_dir):
+            files_and_dirs = os.listdir(output_dir)
+            print("Contents of the directory:")
+            for item in files_and_dirs:
+                print(item)
+
+            print()
+            for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
+                print(f'Current directory: {dirpath}')
+                for filename in filenames:
+                    print(f'File: {filename}')
+                for dirname in dirnames:
+                    print(f'Directory: {dirname}')
+
         self.load_area_of_interest()
         pass
 

@@ -1,0 +1,41 @@
+services:
+  app:
+    container_name: fetch_base_data
+    build: .
+    env_file:
+      - .env
+    networks:
+      - thno
+    volumes:
+      - ../../shared:/usr/src/app/shared
+  app:
+    container_name: fetch_base_data
+    build: .
+    env_file:
+      - .env
+    networks:
+      - thno
+    volumes:
+      - ../../shared:/usr/src/app/shared
+  app:
+    container_name: fetch_base_data
+    build: .
+    env_file:
+      - .env
+    networks:
+      - thno
+    volumes:
+      - ../../shared:/usr/src/app/shared
+  app:
+    container_name: fetch_base_data
+    build: .
+    env_file:
+      - .env
+    networks:
+      - thno
+    volumes:
+      - ../../shared:/usr/src/app/shared
+
+networks:
+  thno:
+    external: true

@@ -1,25 +1,19 @@
-import numpy as np
 import pandas as pd
 import geopandas as gpd
 import pandana as pdna
 import osmnx as ox
 import json
 import h3
-from shapely import wkb, wkt
+from shapely import wkb
+from shapely.geometry import Polygon
 
 import os
 import requests
 import time
 
-# import matplotlib.pylab as plt
-# import gtfs_kit as gk
-# from glob import glob
-# from pathlib import Path
-
 class Indicator():
     def __init__(self):
         self.init_time = time.time()
-        self.data = None
         self.indicator = None
         self.keywords = []
 
@@ -34,6 +28,7 @@ class Indicator():
         self.result = int(os.getenv('result', -1))
         self.zone = int(os.getenv('zone', -1))
 
+
         if self.scenario == -1:
             raise Exception({'error': 'scenario not provided'})
         
@@ -43,6 +38,7 @@ class Indicator():
         if self.zone == -1:
             raise Exception({'error': 'zone not provided'})
 
+        self.resolution = int(os.getenv('resolution', 1))
         self.x_spacing = int(os.getenv('x_spacing', 50))
         self.y_spacing = int(os.getenv('y_spacing', 50))
         self.geo_input = os.getenv('geo_input', 'False') == 'True'
@@ -63,57 +59,95 @@ class Indicator():
         net = self.make_network(a, b)
         self.net = net
 
-        # area = self.load_area_of_interest()
-        # self.area = area
-
         grid_points = self.load_grid_points()
         self.grid_points = grid_points
 
-        # x_spacing = 50
-        # y_spacing = 50
-        # grid_points = self.make_grid_points_gdf(bus_stops, x_spacing, y_spacing)
-        # grid_points = gpd.overlay(grid_points, self.area)
-        
-        # self.grid_points['geometry']= self.grid_points['geometry'].astype(str)
-        # df_json = list(grid_points.T.to_dict().values())
-        # output_path = f'/usr/src/app/shared/hex_res{self.res}_zone{self.zone}.json'
-        # with open(output_path, "w") as file:
-        #     file.write(json.dumps(df_json, indent=4))
-        
-        # self.grid_points = grid_points
-
     def load_bus_stops(self):
-        endpoint = f'{self.server_address}/api/busstop/?scenario={self.scenario}&fields=bus_stop_type'
+        resource = 'busstop'
+        parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
+
+        if not os.path.exists(parquet_path):
+            raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
+
+        try:
+            data_gdf = gpd.read_parquet(parquet_path)
+            data_gdf.set_crs(4326, inplace=True)
+        except Exception as e:
+            print(f"Error al leer el archivo {parquet_path}: {str(e)}")
+
+        endpoint = f'{self.server_address}/api/busstop/?scenario={self.scenario}&raw=True&fields=id,name,bus_stop_type,scenario,project,data_source,updating,change_type,source_type,wkb'
         response = requests.get(endpoint)
         data = response.json()
-        df = pd.DataFrame.from_records(data)
-        df['geometry'] = df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-        gdf = gpd.GeoDataFrame(df)
-        gdf.set_geometry('geometry', inplace=True)
-        gdf.set_crs(4326, inplace=True)
-        del gdf['wkb']
-        return gdf
+        delta_df = pd.DataFrame.from_records(data)
+
+        if len(delta_df):
+            delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+            delta_gdf = gpd.GeoDataFrame(delta_df)
+            delta_gdf.set_geometry('geometry', inplace=True)
+            delta_gdf.set_crs(4326, inplace=True)
+            del delta_gdf['wkb']
+            
+            modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+            ids_to_modify = list(modify_gdf['updating'])
+            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+            modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+            data_gdf = pd.concat([data_gdf, modify_gdf])
+
+            delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+            ids_to_delete = list(delete_gdf['updating']) 
+            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+
+            create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+            data_gdf = pd.concat([data_gdf, create_gdf])
+
+        return data_gdf
 
     def load_nodes_and_edges(self):
-        endpoint = f'{self.server_address}/api/node/?scenario={self.scenario}&fields=None'
-        response = requests.get(endpoint)
-        data = response.json()
-        df = pd.DataFrame.from_records(data)
-        df['geometry'] = df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-        gdf = gpd.GeoDataFrame(df)
-        gdf.set_geometry('geometry')
-        del gdf['wkb']
-        nodes = gdf.copy()
+        resource = 'node'
+        parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
 
-        endpoint = f'{self.server_address}/api/street/?scenario={self.scenario}&fields=length,src,dst'
-        response = requests.get(endpoint)
-        data = response.json()
-        df = pd.DataFrame.from_records(data)
-        df['geometry'] = df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-        gdf = gpd.GeoDataFrame(df)
-        gdf.set_geometry('geometry')
-        del gdf['wkb']
-        edges = gdf.copy()
+        if not os.path.exists(parquet_path):
+            raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
+
+        try:
+            base_gdf = gpd.read_parquet(parquet_path)
+            base_gdf.set_crs(4326, inplace=True)
+            nodes = base_gdf
+        except Exception as e:
+            print(f"Error al leer el archivo {parquet_path}: {str(e)}")
+
+        # endpoint = f'{self.server_address}/api/node/?scenario={self.scenario}&fields=None'
+        # response = requests.get(endpoint)
+        # data = response.json()
+        # df = pd.DataFrame.from_records(data)
+        # df['geometry'] = df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+        # gdf = gpd.GeoDataFrame(df)
+        # gdf.set_geometry('geometry')
+        # del gdf['wkb']
+        # nodes = gdf.copy()
+
+        resource = 'street'
+        parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
+
+        if not os.path.exists(parquet_path):
+            raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
+
+        try:
+            base_gdf = gpd.read_parquet(parquet_path)
+            base_gdf.set_crs(4326, inplace=True)
+            edges = base_gdf
+        except Exception as e:
+            print(f"Error al leer el archivo {parquet_path}: {str(e)}") 
+
+        # endpoint = f'{self.server_address}/api/street/?scenario={self.scenario}&fields=length,src,dst'
+        # response = requests.get(endpoint)
+        # data = response.json()
+        # df = pd.DataFrame.from_records(data)
+        # df['geometry'] = df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+        # gdf = gpd.GeoDataFrame(df)
+        # gdf.set_geometry('geometry')
+        # del gdf['wkb']
+        # edges = gdf.copy()
 
         return nodes, edges
 
@@ -168,23 +202,6 @@ class Indicator():
             os.dup2(old_stdout, 1)
         return net
     
-    def make_grid_points_gdf(self, gdf: gpd.GeoDataFrame, x_spacing, y_spacing):
-        gdf = gdf.copy()
-        gdf.set_crs(4326, inplace=True)
-        gdf.to_crs(32718, inplace=True)
-
-        xmin, ymin, xmax, ymax = gdf.total_bounds
-        xcoords = [c for c in np.arange(xmin, xmax, x_spacing)]
-        ycoords = [c for c in np.arange(ymin, ymax, y_spacing)]
-
-        coordinate_pairs = np.array(np.meshgrid(xcoords, ycoords)).T.reshape(-1, 2)
-        geometries = gpd.points_from_xy(coordinate_pairs[:,0], coordinate_pairs[:,1])
-
-        pointdf = gpd.GeoDataFrame(geometry=geometries, crs=gdf.crs)
-        pointdf.set_crs(32718)
-        pointdf.to_crs(4326, inplace=True)
-        return pointdf
-
     def load_area_of_interest(self):
         area_of_interest = None
         endpoint = f'{self.server_address}/api/zone/{self.zone}/'
@@ -230,14 +247,6 @@ class Indicator():
                 grid_points = grid_points.set_crs(4326)
         else:
             raise Exception({'error': 'grid_points file not found'})
-        
-        # else:
-        #     area = self.load_area_of_interest()
-
-        #     x_spacing = 50
-        #     y_spacing = 50
-        #     grid_points = self.make_grid_points_gdf(area, x_spacing, y_spacing)
-        #     grid_points = gpd.overlay(grid_points, self.area)
 
         return grid_points
 
@@ -280,11 +289,12 @@ class Indicator():
 
         #####################################################
 
-        APERTURE_SIZE = 10
-        hex_col = f'hex{APERTURE_SIZE}'
+        APERTURE_SIZE = self.resolution
+        hex_col = f'code'
 
         distance = accessibility.copy()
 
+        # here, the DataFrame creates a column with the cell code of resolution APERTURE_SIZE that contains each row point
         distance[hex_col] = distance.apply(lambda p: h3.latlng_to_cell(p.geometry.y,p.geometry.x,APERTURE_SIZE),1)
 
         distance_m = distance[[hex_col, 'distance']].groupby(hex_col).mean().reset_index()
@@ -300,6 +310,13 @@ class Indicator():
 
         max_distance = distance_m['distance'].max()
         distance_m = distance_m.fillna(max_distance)
+
+        def h3_to_polygon(code):
+            boundary = h3.cell_to_boundary(code)
+            boundary = [(lat, lon) for lon, lat in boundary]
+            return Polygon(boundary)
+
+        distance_m['geometry'] = distance_m['code'].apply(h3_to_polygon)
 
         self.indicator_result = distance_m
 
@@ -317,7 +334,10 @@ class Indicator():
             df_json_str = self.indicator_result.to_json(indent=4)
             df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
         else:
-            df_json = list(self.indicator_result.T.to_dict().values())
+            temp = self.indicator_result.copy()
+            temp['wkb'] = temp['geometry'].apply(lambda g: g.wkb.hex())
+            del temp['geometry']
+            df_json = list(temp.T.to_dict().values())
             df_json_str = json.dumps(df_json, indent=4)
             
         output_dir = os.path.dirname(output_path)
@@ -328,11 +348,11 @@ class Indicator():
             file.write(df_json_str)
 
         if not self.local:
-            url = f'{self.server_address}/api/result/{self.result}/set_data/'
-            headers = {'Content-Type': 'application/json'}
-
             try:
-                requests.post(url, json=df_json, headers=headers)
+                url = f'{self.server_address}/api/result/{self.result}/set_data/'
+                headers = {'Content-Type': 'application/json'}
+                r = requests.post(url, json=df_json, headers=headers, timeout=20)
+                print(r.status_code)
             except Exception as e:
                 print('exporting data exception:', e)
     
