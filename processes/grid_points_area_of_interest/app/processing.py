@@ -32,7 +32,7 @@ class Processing:
         if os.path.exists(output_path):
             print(f"El archivo {output_path} ya existe.")
         else:
-            print(f"El archivo {output_path} no existe.")
+            print(f"El archivo {output_path} aun no existe.")
         
         print()
         output_dir = os.path.dirname(output_path)

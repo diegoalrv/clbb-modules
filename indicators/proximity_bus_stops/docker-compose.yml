@@ -7,7 +7,11 @@ services:
     networks:
       - thno
     volumes:
-      - ../../shared:/usr/src/app/shared
+      - clbb-modules-cache:/usr/src/app/shared
+
+volumes:
+  clbb-modules-cache:
+    external: true
 
 networks:
   thno:
