@@ -261,6 +261,7 @@ class Indicator():
 
         # gdf = gdf[['code', 'value', 'color', 'diversity', 'geometry']]
         gdf = gdf[['code', 'value', 'color', 'diversity']]
+        gdf.rename({'code': 'hex'}, inplace=True)
         self.indicator = gdf
 
         # UserWarning: Geometry column does not contain geometry.
