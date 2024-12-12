@@ -360,7 +360,30 @@ class Indicator():
         distance[hex_col] = distance.apply(lambda p: h3.latlng_to_cell(p.geometry.y,p.geometry.x,APERTURE_SIZE),1)
         print('distance:', len(distance))
 
-        distance_m = distance[[hex_col, 'distance']].groupby(hex_col).mean().reset_index()
+        for i in range(5):
+            print(distance.iloc[i])
+        
+        distance_m = distance[[hex_col, 'distance']]
+        for i in range(min(5, len(distance))):
+            print(distance_m.iloc[i])
+
+        distance_m = distance_m.groupby(hex_col)
+        for i in range(min(5, len(distance))):
+            print(distance_m.iloc[i])
+
+        distance_m = distance_m.mean()
+        for i in range(min(5, len(distance))):
+            print(distance_m.iloc[i])
+
+        distance_m = distance_m.reset_index()
+        for i in range(min(5, len(distance))):
+            print(distance_m.iloc[i])
+
+        distance_m
+        for i in range(min(5, len(distance))):
+            print(distance_m.iloc[i])
+
+        # distance_m = distance[[hex_col, 'distance']].groupby(hex_col).mean().reset_index()
         print('distance_m:', len(distance_m))
 
         #####################################################
