@@ -1,9 +1,11 @@
 import pandas as pd
 import geopandas as gpd
 import pandana as pdna
+import numpy as np
 import osmnx as ox
 import json
 import h3
+import matplotlib.pyplot as plt
 from shapely import wkb
 from shapely.geometry import Polygon
 
@@ -28,7 +30,6 @@ class Indicator():
         self.result = int(os.getenv('result', -1))
         self.zone = int(os.getenv('zone', -1))
 
-
         if self.scenario == -1:
             raise Exception({'error': 'scenario not provided'})
         
@@ -44,25 +45,31 @@ class Indicator():
         self.geo_input = os.getenv('geo_input', 'False') == 'True'
         self.geo_output = os.getenv('geo_output', 'False') == 'True'
         self.local = os.getenv('local', 'False') == 'True'
+        # self.cache = os.getenv('cache', 'False') == 'True'
     
     def load_data(self):
         print('loading data')
         
-        bus_stops = self.load_bus_stops()
-        self.bus_stops = bus_stops
-
+        # if self.cache:
+        #     self.bus_stops = self.load_bus_stops_from_cache()
+        #     nodes, edges = self.load_nodes_and_edges_from_cache()
+        #     self.nodes = nodes
+        #     self.edges = edges
+        #     self.grid_points = self.load_grid_points_from_cache()
+        # else:
+        self.bus_stops = self.load_bus_stops()
         nodes, edges = self.load_nodes_and_edges()
         self.nodes = nodes
         self.edges = edges
+        self.area = self.load_area_of_interest()
+        self.grid_points = self.get_grid_points_from_area(self.bus_stops, self.x_spacing, self.y_spacing)
 
         a, b = self.nodes_edges_to_net_format(nodes, edges)
+
         net = self.make_network(a, b)
         self.net = net
 
-        grid_points = self.load_grid_points()
-        self.grid_points = grid_points
-
-    def load_bus_stops(self):
+    def load_bus_stops_from_cache(self):
         resource = 'busstop'
         parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
 
@@ -101,8 +108,22 @@ class Indicator():
             data_gdf = pd.concat([data_gdf, create_gdf])
 
         return data_gdf
+    
+    def load_bus_stops(self):
+        endpoint = f'{self.server_address}/api/busstop/?scenario={self.scenario}&fields=name,bus_stop_type,scenario,project,data_source,updating,change_type,source_type'
+        response = requests.get(endpoint)
+        data = response.json()
+        data_df = pd.DataFrame.from_records(data)
 
-    def load_nodes_and_edges(self):
+        data_df['geometry'] = data_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+        del data_df['wkb']
+        data_gdf = gpd.GeoDataFrame(data_df)
+        data_gdf.set_geometry('geometry', inplace=True)
+        data_gdf.set_crs(4326, inplace=True)
+
+        return data_gdf
+
+    def load_nodes_and_edges_from_cache(self):
         resource = 'node'
         parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
 
@@ -116,16 +137,6 @@ class Indicator():
         except Exception as e:
             print(f"Error al leer el archivo {parquet_path}: {str(e)}")
 
-        # endpoint = f'{self.server_address}/api/node/?scenario={self.scenario}&fields=None'
-        # response = requests.get(endpoint)
-        # data = response.json()
-        # df = pd.DataFrame.from_records(data)
-        # df['geometry'] = df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-        # gdf = gpd.GeoDataFrame(df)
-        # gdf.set_geometry('geometry')
-        # del gdf['wkb']
-        # nodes = gdf.copy()
-
         resource = 'street'
         parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
 
@@ -137,17 +148,30 @@ class Indicator():
             base_gdf.set_crs(4326, inplace=True)
             edges = base_gdf
         except Exception as e:
-            print(f"Error al leer el archivo {parquet_path}: {str(e)}") 
+            print(f"Error al leer el archivo {parquet_path}: {str(e)}")
 
-        # endpoint = f'{self.server_address}/api/street/?scenario={self.scenario}&fields=length,src,dst'
-        # response = requests.get(endpoint)
-        # data = response.json()
-        # df = pd.DataFrame.from_records(data)
-        # df['geometry'] = df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-        # gdf = gpd.GeoDataFrame(df)
-        # gdf.set_geometry('geometry')
-        # del gdf['wkb']
-        # edges = gdf.copy()
+        return nodes, edges
+    
+    def load_nodes_and_edges(self):
+        endpoint = f'{self.server_address}/api/node/?scenario={self.scenario}&fields=None'
+        response = requests.get(endpoint)
+        data = response.json()
+        df = pd.DataFrame.from_records(data)
+        df['geometry'] = df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+        del df['wkb']
+        gdf = gpd.GeoDataFrame(df)
+        gdf.set_geometry('geometry')
+        nodes = gdf.copy()
+
+        endpoint = f'{self.server_address}/api/street/?scenario={self.scenario}&fields=length,src,dst'
+        response = requests.get(endpoint)
+        data = response.json()
+        df = pd.DataFrame.from_records(data)
+        df['geometry'] = df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+        del df['wkb']
+        gdf = gpd.GeoDataFrame(df)
+        gdf.set_geometry('geometry')
+        edges = gdf.copy()
 
         return nodes, edges
 
@@ -224,7 +248,7 @@ class Indicator():
         area_of_interest = area_of_interest.set_crs(4326)
         return area_of_interest
     
-    def load_grid_points(self):
+    def load_grid_points(self, area):
         grid_points = None
         
         input_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}{"_geo" if self.geo_input else ""}.json'
@@ -249,8 +273,33 @@ class Indicator():
             raise Exception({'error': 'grid_points file not found'})
 
         return grid_points
+    
+    def load_grid_points_from_cache():
+        pass
 
     ############################################################
+    # Methods
+    def make_grid_points_gdf(self, gdf: gpd.GeoDataFrame, x_spacing, y_spacing) -> gpd.GeoDataFrame:
+        gdf = gdf.copy()
+        gdf.set_crs(4326, inplace=True)
+        gdf.to_crs(32718, inplace=True)
+
+        xmin, ymin, xmax, ymax = self.area.to_crs(32718).total_bounds
+        xcoords = [c for c in np.arange(xmin, xmax, x_spacing)]
+        ycoords = [c for c in np.arange(ymin, ymax, y_spacing)]
+
+        coordinate_pairs = np.array(np.meshgrid(xcoords, ycoords)).T.reshape(-1, 2)
+        geometries = gpd.points_from_xy(coordinate_pairs[:,0], coordinate_pairs[:,1])
+
+        pointdf = gpd.GeoDataFrame(geometry=geometries, crs=gdf.crs)
+        pointdf.set_crs(32718)
+        pointdf.to_crs(4326, inplace=True)
+        return pointdf
+    
+    def get_grid_points_from_area(self, gdf: gpd.GeoDataFrame, x_spacing: int, y_spacing: int) -> gpd.GeoDataFrame:
+        grid_points = self.make_grid_points_gdf(gdf, x_spacing, y_spacing)
+        grid_points = gpd.overlay(grid_points, self.area)
+        return grid_points
 
     def execute_process(self):
         print('computing indicator')
@@ -270,7 +319,7 @@ class Indicator():
         grid_points['id'] = self.net.get_node_ids(grid_points['geometry'].x, grid_points['geometry'].y)
 
         #####################################################
-        
+
         grid_with_nearest_node = pd.merge(grid_points, self.net.nodes_df, on='id')
 
         def distance_between_points(row):
@@ -311,33 +360,65 @@ class Indicator():
         max_distance = distance_m['distance'].max()
         distance_m = distance_m.fillna(max_distance)
 
-        def h3_to_polygon(code):
-            boundary = h3.cell_to_boundary(code)
-            boundary = [(lat, lon) for lon, lat in boundary]
-            return Polygon(boundary)
+        # def h3_to_polygon(code):
+        #     boundary = h3.cell_to_boundary(code)
+        #     boundary = [(lat, lon) for lon, lat in boundary]
+        #     return Polygon(boundary)
 
-        distance_m['geometry'] = distance_m['code'].apply(h3_to_polygon)
+        # distance_m['geometry'] = distance_m['code'].apply(h3_to_polygon)
 
         self.indicator_result = distance_m
+
+        #####################################################
+        
+        self.adjust_backend_format()
+        pass
+
+    def adjust_backend_format(self):
+        gdf = self.indicator_result
+        gdf['value'] = gdf['mins']
+
+        def get_color(value, vmin, vmax):
+            cmap = plt.cm.RdYlGn_r
+            norm = plt.Normalize(vmin, vmax)
+            color = cmap(norm(value))
+            return [color[0], color[1], color[2]]
+
+        gdf['color'] = gdf['value'].apply(lambda v: get_color(v, 0, 60))
+
+        gdf = gdf[['code', 'value', 'color', 'mins', 'distance', 'display_text']]
+        self.indicator_result = gdf
+
+        # UserWarning: Geometry column does not contain geometry.
+        # this code will generate that warning but is totally normal, the column
+        # is for geometry data, but here we make it str in order to serialize it
+        # also in case of uploading to database, postgres receives the geometry's wkt as string and automatically converts to wkb
+        
+        # if not self.geo_output:
+            # self.indicator['wkb'] = self.indicator_result['geometry'].apply(lambda g: g.wkb.hex())
+            # del  self.indicator_result['geometry']
+            # temp = self.indicator_result.copy()
+            # temp['wkb'] = temp['geometry'].apply(lambda g: g.wkb.hex())
+            # del temp['geometry']
+            # pass
+            # self.indicator = self.indicator[['id', 'wkb']]
+            # pass
+        # else:
+            # self.indicator = self.indicator[['id', 'geometry']]
+            # pass
+        # pass
 
     ############################################################
         
     def export_data(self):
         print('exporting data')
-
-        # df_json = self.indicator_result.to_json(orient='records')
-        # df_json = json.loads(df_json)
-
         output_path = f'/usr/src/app/shared/zone_{self.zone}/bus_stops_proximity/result{self.result}{"_geo" if self.geo_output else ""}.json'
 
         if self.geo_output:
             df_json_str = self.indicator_result.to_json(indent=4)
             df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
         else:
-            temp = self.indicator_result.copy()
-            temp['wkb'] = temp['geometry'].apply(lambda g: g.wkb.hex())
-            del temp['geometry']
-            df_json = list(temp.T.to_dict().values())
+            df_json = list(self.indicator_result.T.to_dict().values())
             df_json_str = json.dumps(df_json, indent=4)
             
         output_dir = os.path.dirname(output_path)
@@ -364,7 +445,7 @@ class Indicator():
         except Exception as e:
             print('exception in load_data:',e)
             return
-            
+
         try:
             self.execute_process()
         except Exception as e:

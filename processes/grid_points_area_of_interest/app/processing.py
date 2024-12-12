@@ -1,12 +1,9 @@
-import h3
 import geopandas as gpd
-import pandas as pd
 import os
 import requests
 import json
 import numpy as np
 from shapely import wkb
-from shapely.geometry import Polygon
 
 class Processing:
     # Init
