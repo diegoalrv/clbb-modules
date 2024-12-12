@@ -382,7 +382,7 @@ class Indicator():
             cmap = plt.cm.RdYlGn_r
             norm = plt.Normalize(vmin, vmax)
             color = cmap(norm(value))
-            return [color[0], color[1], color[2]]
+            return [int(color[0] * 255), int(color[1] * 255), int(color[2] * 255)]
 
         gdf['color'] = gdf['value'].apply(lambda v: get_color(v, 0, 60))
 
