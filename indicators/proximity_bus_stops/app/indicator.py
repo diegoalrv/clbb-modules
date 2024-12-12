@@ -360,6 +360,8 @@ class Indicator():
         distance[hex_col] = distance.apply(lambda p: h3.latlng_to_cell(p.geometry.y,p.geometry.x,APERTURE_SIZE),1)
         print('distance:', len(distance))
 
+        print("resolution", self.resolution)
+
         for i in range(5):
             print(distance.iloc[i])
         
