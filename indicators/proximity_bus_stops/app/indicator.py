@@ -58,16 +58,24 @@ class Indicator():
         #     self.grid_points = self.load_grid_points_from_cache()
         # else:
         self.bus_stops = self.load_bus_stops()
+        print('bus_stops:', len(self.bus_stops))
         nodes, edges = self.load_nodes_and_edges()
         self.nodes = nodes
         self.edges = edges
+        print('nodes:', len(self.nodes))
+        print('edges:', len(self.edges))
         self.area = self.load_area_of_interest()
+        print('area:', len(self.area))
         self.grid_points = self.get_grid_points_from_area(self.bus_stops, self.x_spacing, self.y_spacing)
+        print('grid_points:', len(self.grid_points))
 
         a, b = self.nodes_edges_to_net_format(nodes, edges)
+        print('a:', len(a))
+        print('b:', len(b))
 
         net = self.make_network(a, b)
         self.net = net
+        print('net:', len(self.net))
 
     def load_bus_stops_from_cache(self):
         resource = 'busstop'
@@ -317,10 +325,12 @@ class Indicator():
 
         grid_points = self.grid_points
         grid_points['id'] = self.net.get_node_ids(grid_points['geometry'].x, grid_points['geometry'].y)
+        print('grid_points:', len(grid_points))
 
         #####################################################
 
         grid_with_nearest_node = pd.merge(grid_points, self.net.nodes_df, on='id')
+        print('grid_with_nearest_node:', len(grid_with_nearest_node))
 
         def distance_between_points(row):
             origin_x = row['geometry'].x
@@ -330,11 +340,14 @@ class Indicator():
             return ox.distance.great_circle(origin_y, origin_x, destination_y, destination_x)
 
         grid_with_nearest_node['distance_to_nearest_node'] = grid_with_nearest_node.apply(distance_between_points, axis=1)
+        print('grid_with_nearest_node:', len(grid_with_nearest_node))
 
         #####################################################
 
         accessibility = pd.merge(grid_with_nearest_node, accessibility, on='id').rename(columns={1: 'distance_to_nearest_poi'})
+        print('accessibility:', len(accessibility))
         accessibility['distance'] = accessibility['distance_to_nearest_node'] + accessibility['distance_to_nearest_poi']
+        print('accessibility:', len(accessibility))
 
         #####################################################
 
@@ -342,11 +355,14 @@ class Indicator():
         hex_col = f'code'
 
         distance = accessibility.copy()
+        print('distance:', len(distance))
 
         # here, the DataFrame creates a column with the cell code of resolution APERTURE_SIZE that contains each row point
         distance[hex_col] = distance.apply(lambda p: h3.latlng_to_cell(p.geometry.y,p.geometry.x,APERTURE_SIZE),1)
+        print('distance:', len(distance))
 
         distance_m = distance[[hex_col, 'distance']].groupby(hex_col).mean().reset_index()
+        print('distance_m:', len(distance_m))
 
         #####################################################
 
@@ -359,6 +375,7 @@ class Indicator():
 
         max_distance = distance_m['distance'].max()
         distance_m = distance_m.fillna(max_distance)
+        print('distance_m:', len(distance_m))
 
         # def h3_to_polygon(code):
         #     boundary = h3.cell_to_boundary(code)
@@ -368,6 +385,7 @@ class Indicator():
         # distance_m['geometry'] = distance_m['code'].apply(h3_to_polygon)
 
         self.indicator_result = distance_m
+        print('indicator_result:', len(distance_m))
 
         #####################################################
         
