@@ -45,9 +45,13 @@ class Indicator():
             # self.land_uses = self.load_land_uses_from_cache()
             # self.h3_cells = self.load_h3_cells_from_cache()
         # else:        
+        print('1')
         self.area = self.load_area_of_interest()
+        print('2')
         self.land_uses = self.load_land_uses()
+        print('3')
         self.h3_cells = self.load_h3_cells()
+        print('4')
         pass
     
     def load_area_of_interest(self):
@@ -58,9 +62,12 @@ class Indicator():
 
         properties = data.copy()
         properties['object_type'] = properties['properties']['object_type']
-        del properties['properties']
-        del properties['wkb']
-        del properties['geometry']
+        if properties.get('properties'):
+            del properties['properties']
+        if properties.get('wkb'):
+            del properties['wkb']
+        if properties.get('geometry'):
+            del properties['geometry']
 
         geojson = {
             'properties': properties,
@@ -261,7 +268,7 @@ class Indicator():
 
         # gdf = gdf[['code', 'value', 'color', 'diversity', 'geometry']]
         gdf = gdf[['code', 'value', 'color', 'diversity']]
-        gdf.rename({'code': 'hex'}, inplace=True)
+        # gdf.rename({'code': 'hex'}, inplace=True)
         self.indicator = gdf
 
         # UserWarning: Geometry column does not contain geometry.

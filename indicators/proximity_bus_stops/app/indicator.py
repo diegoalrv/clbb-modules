@@ -387,7 +387,7 @@ class Indicator():
         gdf['color'] = gdf['value'].apply(lambda v: get_color(v, 0, 60))
 
         gdf = gdf[['code', 'value', 'color', 'mins', 'distance', 'display_text']]
-        gdf.rename({'code': 'hex'}, inplace=True)
+        # gdf.rename({'code': 'hex'}, inplace=True)
         self.indicator_result = gdf
 
         # UserWarning: Geometry column does not contain geometry.
