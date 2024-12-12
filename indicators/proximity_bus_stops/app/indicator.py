@@ -75,7 +75,6 @@ class Indicator():
 
         net = self.make_network(a, b)
         self.net = net
-        print('net:', len(self.net))
 
     def load_bus_stops_from_cache(self):
         resource = 'busstop'
