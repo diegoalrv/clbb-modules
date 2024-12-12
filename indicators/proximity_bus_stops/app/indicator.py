@@ -364,21 +364,25 @@ class Indicator():
             print(distance.iloc[i])
         
         distance_m = distance[[hex_col, 'distance']]
+        print('distance[[hex_col, distance]]:', len(distance_m))
         for i in range(min(5, len(distance))):
             print(distance_m.iloc[i])
 
         distance_m = distance_m.groupby(hex_col)
+        print('distance_m.groupby(hex_col):', len(distance_m))
         print(distance_m)
 
         distance_m = distance_m.mean()
+        print('distance_m.mean():', len(distance_m))
         for i in range(min(5, len(distance))):
             print(distance_m.iloc[i])
 
         distance_m = distance_m.reset_index()
+        print('distance_m.reset_index():', len(distance_m))
         for i in range(min(5, len(distance))):
             print(distance_m.iloc[i])
 
-        distance_m
+        print('distance_m:', len(distance_m))
         for i in range(min(5, len(distance))):
             print(distance_m.iloc[i])
 
