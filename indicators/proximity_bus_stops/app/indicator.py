@@ -74,24 +74,28 @@ class Indicator():
                 for dirname in dirnames:
                     print(f'Directory: {dirname}')
         
-        # if self.cache:
-        #     self.bus_stops = self.load_bus_stops_from_cache()
-        #     nodes, edges = self.load_nodes_and_edges_from_cache()
-        #     self.nodes = nodes
-        #     self.edges = edges
-        #     self.grid_points = self.load_grid_points_from_cache()
-        # else:
-        self.bus_stops = self.load_bus_stops()
-        print('bus_stops:', len(self.bus_stops))
-        nodes, edges = self.load_nodes_and_edges()
-        self.nodes = nodes
-        self.edges = edges
-        print('nodes:', len(self.nodes))
-        print('edges:', len(self.edges))
-        self.area = self.load_area_of_interest()
-        print('area:', len(self.area))
-        self.grid_points = self.get_grid_points_from_area(self.bus_stops, self.x_spacing, self.y_spacing)
-        print('grid_points:', len(self.grid_points))
+        if self.cache:
+            self.bus_stops = self.load_bus_stops_from_cache()
+            print('bus_stops:', len(self.bus_stops))
+            nodes, edges = self.load_nodes_and_edges_from_cache()
+            self.nodes = nodes
+            self.edges = edges
+            print('nodes:', len(self.nodes))
+            print('edges:', len(self.edges))
+            self.grid_points = self.load_grid_points_from_cache()
+            print('grid_points:', len(self.grid_points))
+        else:
+            self.bus_stops = self.load_bus_stops()
+            print('bus_stops:', len(self.bus_stops))
+            nodes, edges = self.load_nodes_and_edges()
+            self.nodes = nodes
+            self.edges = edges
+            print('nodes:', len(self.nodes))
+            print('edges:', len(self.edges))
+            self.area = self.load_area_of_interest()
+            print('area:', len(self.area))
+            self.grid_points = self.get_grid_points_from_area(self.bus_stops, self.x_spacing, self.y_spacing)
+            print('grid_points:', len(self.grid_points))
 
         a, b = self.nodes_edges_to_net_format(nodes, edges)
         print('a:', len(a))

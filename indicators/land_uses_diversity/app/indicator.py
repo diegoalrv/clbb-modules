@@ -65,17 +65,19 @@ class Indicator():
                 for dirname in dirnames:
                     print(f'Directory: {dirname}')
         
-        # if self.cache:
-            # self.land_uses = self.load_land_uses_from_cache()
-            # self.h3_cells = self.load_h3_cells_from_cache()
-        # else:        
-        print('1')
-        self.area = self.load_area_of_interest()
-        print('2')
-        self.land_uses = self.load_land_uses()
-        print('3')
-        self.h3_cells = self.load_h3_cells()
-        print('4')
+        if self.cache:
+            self.land_uses = self.load_land_uses_from_cache()
+            print('land_uses:', len(self.land_uses))
+            self.h3_cells = self.load_h3_cells_from_cache()
+            print('h3_cells:', len(self.h3_cells))
+        else:        
+            print('1')
+            self.area = self.load_area_of_interest()
+            print('2')
+            self.land_uses = self.load_land_uses()
+            print('3')
+            self.h3_cells = self.load_h3_cells()
+            print('4')
         pass
     
     def load_area_of_interest(self):
@@ -102,6 +104,46 @@ class Indicator():
         area_of_interest = gpd.read_file(geojson_str)
         area_of_interest = area_of_interest.set_crs(4326)
         return area_of_interest
+
+    def load_land_uses_from_cache(self):
+        resource = 'landuse'
+        parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
+
+        if not os.path.exists(parquet_path):
+            raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
+
+        try:
+            data_gdf = gpd.read_parquet(parquet_path)
+            data_gdf.set_crs(4326, inplace=True)
+        except Exception as e:
+            print(f"Error al leer el archivo {parquet_path}: {str(e)}")
+
+        endpoint = f'{self.server_address}/api/landuse/?scenario={self.scenario}&raw=True&fields=id,use,scenario,project,data_source,updating,change_type,source_type,wkb'
+        response = requests.get(endpoint)
+        data = response.json()
+        delta_df = pd.DataFrame.from_records(data)
+
+        if len(delta_df):
+            delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+            delta_gdf = gpd.GeoDataFrame(delta_df)
+            delta_gdf.set_geometry('geometry', inplace=True)
+            delta_gdf.set_crs(4326, inplace=True)
+            del delta_gdf['wkb']
+            
+            modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+            ids_to_modify = list(modify_gdf['updating'])
+            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+            modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+            data_gdf = pd.concat([data_gdf, modify_gdf])
+
+            delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+            ids_to_delete = list(delete_gdf['updating']) 
+            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+
+            create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+            data_gdf = pd.concat([data_gdf, create_gdf])
+
+        return data_gdf
     
     def load_land_uses(self):
         endpoint = f'{self.server_address}/api/landuse/?scenario={self.scenario}&fields=use'
