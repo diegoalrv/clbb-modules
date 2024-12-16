@@ -49,6 +49,30 @@ class Indicator():
     
     def load_data(self):
         print('loading data')
+
+        output_path = f'/usr/src/app/shared/zone_{self.zone}/data/busstop_proximity.parquet'
+
+        if os.path.exists(output_path):
+            print(f"El archivo {output_path} ya existe.")
+        else:
+            print(f"El archivo {output_path} no existe.")
+        
+        print()
+        output_dir = os.path.dirname(output_path)
+
+        if os.path.exists(output_dir):
+            files_and_dirs = os.listdir(output_dir)
+            print("Contents of the directory:")
+            for item in files_and_dirs:
+                print(item)
+
+            print()
+            for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
+                print(f'Current directory: {dirpath}')
+                for filename in filenames:
+                    print(f'File: {filename}')
+                for dirname in dirnames:
+                    print(f'Directory: {dirname}')
         
         # if self.cache:
         #     self.bus_stops = self.load_bus_stops_from_cache()
