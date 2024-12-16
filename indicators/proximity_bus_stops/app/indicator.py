@@ -309,8 +309,31 @@ class Indicator():
 
         return grid_points
     
-    def load_grid_points_from_cache():
-        pass
+    def load_grid_points_from_cache(self):
+        grid_points = None
+        
+        input_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}{"_geo" if self.geo_input else ""}.json'
+        print(f'opening path {input_path}')
+        if os.path.exists(input_path):
+            if self.geo_input:
+                with open(input_path, "r") as file:
+                    grid_points_str = file.read()
+
+                grid_points = gpd.read_file(grid_points_str)
+                grid_points = grid_points.set_crs(4326)
+            else:
+                with open(input_path, "r") as file:
+                    grid_points_str = file.read()
+
+                grid_points_json = json.loads(grid_points_str)
+                grid_points = pd.DataFrame.from_records(grid_points_json)
+                grid_points_geometry = grid_points['wkb'].apply(lambda g: wkb.loads(bytes.fromhex(g)))
+                grid_points = gpd.GeoDataFrame(grid_points, geometry=grid_points_geometry)
+                grid_points = grid_points.set_crs(4326)
+        else:
+            raise Exception({'error': 'grid_points file not found'})
+        
+        return grid_points
 
     ############################################################
     # Methods
