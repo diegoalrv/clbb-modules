@@ -245,9 +245,9 @@ class Indicator():
 
         self.indicator = gdf_diversity
 
-        gdf_diversity = gdf_diversity.merge(self.get_h3_cells_from_area(), on='code', indicator=True, how='left').loc[lambda x : x['_merge']!='both']
+        # gdf_diversity = gdf_diversity.merge(self.get_h3_cells_from_area(), on='code', indicator=True, how='left').loc[lambda x : x['_merge']!='both']
 
-        print(gdf_diversity['diversity'].max())
+        print(self.indicator['diversity'].max())
 
         ########################################################
         
