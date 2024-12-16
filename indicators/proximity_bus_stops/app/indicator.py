@@ -45,7 +45,7 @@ class Indicator():
         self.geo_input = os.getenv('geo_input', 'False') == 'True'
         self.geo_output = os.getenv('geo_output', 'False') == 'True'
         self.local = os.getenv('local', 'False') == 'True'
-        # self.cache = os.getenv('cache', 'False') == 'True'
+        self.cache = os.getenv('cache', 'False') == 'True'
     
     def load_data(self):
         print('loading data')
