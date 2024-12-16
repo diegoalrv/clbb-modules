@@ -322,21 +322,34 @@ class Indicator():
 
     def execute(self):
         try:
-            self.load_data()
+            try:
+                self.load_data()
+            except Exception as e:
+                print('exception in load_data:',e)
+                raise e
+                
+            try:
+                self.execute_process()
+            except Exception as e:
+                print('exception in execute_process:',e)
+                raise e
+                
+            try:
+                self.export_data()
+            except Exception as e:
+                print('exception in export_data:',e)
+                raise e
         except Exception as e:
-            print('exception in load_data:',e)
-            return
-            
-        try:
-            self.execute_process()
-        except Exception as e:
-            print('exception in execute_process:',e)
-            return
-            
-        try:
-            self.export_data()
-        except Exception as e:
-            print('exception in export_data:',e)
-            return
+            try:
+                print('setting result_state to Error')
+                url = f'{self.server_address}/api/result/{self.result}/'
+                headers = {'Content-Type': 'application/json'}
+                json_data = {
+                    'result_state': 'Error'
+                }
+                r = requests.patch(url, json=json_data, headers=headers, timeout=20)
+                print(r.status_code)
+            except Exception as e:
+                print('exporting data exception:', e)
 
         # time.sleep(1)
