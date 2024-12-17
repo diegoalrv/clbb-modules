@@ -70,7 +70,7 @@ class Indicator():
             self.nodes = self.load_nodes_from_cache()
             print('cached nodes:', len(self.nodes))
             
-            self.nodes = self.load_edges_from_cache()
+            self.edges = self.load_edges_from_cache()
             print('cached edges:', len(self.edges))
             
             self.grid_points = self.load_grid_points_from_cache()
