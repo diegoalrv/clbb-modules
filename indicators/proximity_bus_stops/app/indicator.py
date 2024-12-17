@@ -187,7 +187,9 @@ class Indicator():
             nodes_gdf = pd.concat([nodes_gdf, create_gdf])
         
         node_ids = list(set(self.edges['src'] + self.edges['dst']))
-        nodes_gdf = nodes_gdf[nodes_gdf['id'].apply(lambda id: id in node_ids)]
+        print('len(node_ids):', len(node_ids))
+        # nodes_gdf = nodes_gdf[nodes_gdf['id'].apply(lambda id: id in node_ids)]
+        print('len(nodes_gdf):', len(nodes_gdf))
 
         return nodes_gdf
 
