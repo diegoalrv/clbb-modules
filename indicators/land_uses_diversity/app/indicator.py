@@ -42,17 +42,17 @@ class Indicator():
     def load_data(self):
         print('loading data')
 
-        output_path = f'/usr/src/app/shared/landuse_diversity.parquet'
+        # output_path = f'/usr/src/app/shared/landuse_diversity.parquet'
         
-        output_dir = os.path.dirname(output_path)
+        # output_dir = os.path.dirname(output_path)
 
-        if os.path.exists(output_dir):
-            for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
-                print(f'Current directory: {dirpath}')
-                for filename in filenames:
-                    print(f'File: {filename}')
-                for dirname in dirnames:
-                    print(f'Directory: {dirname}')
+        # if os.path.exists(output_dir):
+        #     for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
+        #         print(f'Current directory: {dirpath}')
+        #         for filename in filenames:
+        #             print(f'File: {filename}')
+        #         for dirname in dirnames:
+        #             print(f'Directory: {dirname}')
         
         if self.cache:
             self.land_uses = self.load_land_uses_from_cache()
@@ -94,6 +94,7 @@ class Indicator():
         geojson_str = json.dumps(geojson, ensure_ascii=False)
         area_of_interest = gpd.read_file(geojson_str)
         area_of_interest = area_of_interest.set_crs(4326)
+
         return area_of_interest
 
     def load_land_uses_from_cache(self):
@@ -104,8 +105,8 @@ class Indicator():
             raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
 
         try:
-            data_gdf = gpd.read_parquet(parquet_path)
-            data_gdf.set_crs(4326, inplace=True)
+            landuses_gdf = gpd.read_parquet(parquet_path)
+            landuses_gdf.set_crs(4326, inplace=True)
         except Exception as e:
             print(f"Error al leer el archivo {parquet_path}: {str(e)}")
 
@@ -123,18 +124,18 @@ class Indicator():
             
             modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
             ids_to_modify = list(modify_gdf['updating'])
-            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+            landuses_gdf = landuses_gdf[landuses_gdf['id'].apply(lambda id: id not in ids_to_modify)]
             modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
-            data_gdf = pd.concat([data_gdf, modify_gdf])
+            landuses_gdf = pd.concat([landuses_gdf, modify_gdf])
 
             delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
             ids_to_delete = list(delete_gdf['updating']) 
-            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+            landuses_gdf = landuses_gdf[landuses_gdf['id'].apply(lambda id: id not in ids_to_delete)]
 
             create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
-            data_gdf = pd.concat([data_gdf, create_gdf])
+            landuses_gdf = pd.concat([landuses_gdf, create_gdf])
 
-        return data_gdf
+        return landuses_gdf
     
     def load_land_uses(self):
         endpoint = f'{self.server_address}/api/landuse/?scenario={self.scenario}&fields=use'
@@ -146,6 +147,7 @@ class Indicator():
         gdf.set_geometry('geometry', inplace=True)
         gdf.set_crs(4326, inplace=True)
         del gdf['wkb']
+
         return gdf
     
     def load_h3_cells_from_cache(self):
@@ -354,7 +356,6 @@ class Indicator():
             df_json_str = self.indicator.to_json(indent=4)
             df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
         else:
-            print(self.indicator.columns)
             df_json = list(self.indicator.T.to_dict().values())
             df_json_str = json.dumps(df_json, indent=4)
 

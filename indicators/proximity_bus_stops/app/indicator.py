@@ -51,17 +51,17 @@ class Indicator():
     def load_data(self):
         print('loading data')
 
-        output_path = f'/usr/src/app/shared/busstop_proximity.parquet'
+        # output_path = f'/usr/src/app/shared/busstop_proximity.parquet'
         
-        output_dir = os.path.dirname(output_path)
-
-        if os.path.exists(output_dir):
-            for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
-                print(f'Current directory: {dirpath}')
-                for filename in filenames:
-                    print(f'File: {filename}')
-                for dirname in dirnames:
-                    print(f'Directory: {dirname}')
+        # output_dir = os.path.dirname(output_path)
+        
+        # if os.path.exists(output_dir):
+        #     for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
+        #         print(f'Current directory: {dirpath}')
+        #         for filename in filenames:
+        #             print(f'File: {filename}')
+        #         for dirname in dirnames:
+        #             print(f'Directory: {dirname}')
         
         if self.cache:
             self.bus_stops = self.load_bus_stops_from_cache()
@@ -92,7 +92,7 @@ class Indicator():
             self.grid_points = self.get_grid_points_from_area(self.bus_stops, self.x_spacing, self.y_spacing)
             print('grid_points:', len(self.grid_points))
 
-        a, b = self.nodes_edges_to_net_format(nodes, edges)
+        a, b = self.nodes_edges_to_net_format(self.nodes, self.edges)
         print('a:', len(a))
         print('b:', len(b))
 
@@ -159,8 +159,8 @@ class Indicator():
             raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
 
         try:
-            data_gdf = gpd.read_parquet(parquet_path)
-            data_gdf.set_crs(4326, inplace=True)
+            nodes_gdf = gpd.read_parquet(parquet_path)
+            nodes_gdf.set_crs(4326, inplace=True)
         except Exception as e:
             print(f"Error al leer el archivo {parquet_path}: {str(e)}")
 
@@ -177,18 +177,17 @@ class Indicator():
             
             modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
             ids_to_modify = list(modify_gdf['updating'])
-            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
-            data_gdf = pd.concat([data_gdf, modify_gdf])
+            nodes_gdf = nodes_gdf[nodes_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+            nodes_gdf = pd.concat([nodes_gdf, modify_gdf])
 
             delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
             ids_to_delete = list(delete_gdf['updating']) 
-            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+            nodes_gdf = nodes_gdf[nodes_gdf['id'].apply(lambda id: id not in ids_to_delete)]
 
             create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
-            data_gdf = pd.concat([data_gdf, create_gdf])
+            nodes_gdf = pd.concat([nodes_gdf, create_gdf])
         
-        nodes = data_gdf.copy()
-        return nodes
+        return nodes_gdf
 
     def load_edges_from_cache(self):
         resource = 'street'
@@ -198,12 +197,12 @@ class Indicator():
             raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
 
         try:
-            data_gdf = gpd.read_parquet(parquet_path)
-            data_gdf.set_crs(4326, inplace=True)
+            edges_gdf = gpd.read_parquet(parquet_path)
+            edges_gdf.set_crs(4326, inplace=True)
         except Exception as e:
             print(f"Error al leer el archivo {parquet_path}: {str(e)}")
 
-        endpoint = f'{self.server_address}/api/{resource}/?scenario={self.scenario}&raw=True&fields=id,name,osm_id,osm_src,osm_dst,src,dst,max_speed,lanes,scenario,project,data_source,updating,change_type,source_type,wkb'
+        endpoint = f'{self.server_address}/api/{resource}/?scenario={self.scenario}&raw=True&fields=id,name,osm_id,osm_src,osm_dst,src,dst,max_speed,lanes,length,scenario,project,data_source,updating,change_type,source_type,wkb'
         response = requests.get(endpoint)
         data = response.json()
         delta_df = pd.DataFrame.from_records(data)
@@ -216,21 +215,20 @@ class Indicator():
             
             modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
             ids_to_modify = list(modify_gdf['updating'])
-            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
-            data_gdf = pd.concat([data_gdf, modify_gdf])
+            edges_gdf = edges_gdf[edges_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+            edges_gdf = pd.concat([edges_gdf, modify_gdf])
 
             delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
             ids_to_delete = list(delete_gdf['updating']) 
-            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+            edges_gdf = edges_gdf[edges_gdf['id'].apply(lambda id: id not in ids_to_delete)]
 
             create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
-            data_gdf = pd.concat([data_gdf, create_gdf])
+            edges_gdf = pd.concat([edges_gdf, create_gdf])
         
-        edges = data_gdf.copy()
-        return edges
+        return edges_gdf
     
-    def load_nodes_and_edges(self):
-        endpoint = f'{self.server_address}/api/node/?scenario={self.scenario}&fields=None'
+    def load_nodes(self):
+        endpoint = f'{self.server_address}/api/node/?scenario={self.scenario}&fields=osm_id'
         response = requests.get(endpoint)
         data = response.json()
         df = pd.DataFrame.from_records(data)
@@ -240,6 +238,9 @@ class Indicator():
         gdf.set_geometry('geometry')
         nodes = gdf.copy()
 
+        return nodes
+
+    def load_edges(self):
         endpoint = f'{self.server_address}/api/street/?scenario={self.scenario}&fields=length,src,dst'
         response = requests.get(endpoint)
         data = response.json()
@@ -250,7 +251,7 @@ class Indicator():
         gdf.set_geometry('geometry')
         edges = gdf.copy()
 
-        return nodes, edges
+        return edges
 
     def nodes_edges_to_net_format(self, nodes_gdf, edges_gdf):
         nodes = pd.DataFrame(
