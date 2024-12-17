@@ -67,12 +67,10 @@ class Indicator():
             self.bus_stops = self.load_bus_stops_from_cache()
             print('cached bus_stops:', len(self.bus_stops))
 
-            nodes, edges = self.load_nodes_and_edges_from_cache()
-            
-            self.nodes = nodes
+            self.nodes = self.load_nodes_from_cache()
             print('cached nodes:', len(self.nodes))
             
-            self.edges = edges
+            self.nodes = self.load_edges_from_cache()
             print('cached edges:', len(self.edges))
             
             self.grid_points = self.load_grid_points_from_cache()
@@ -121,15 +119,13 @@ class Indicator():
 
         if len(delta_df):
             delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-            delta_gdf = gpd.GeoDataFrame(delta_df)
-            delta_gdf.set_geometry('geometry', inplace=True)
+            del delta_df['wkb']
+            delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
             delta_gdf.set_crs(4326, inplace=True)
-            del delta_gdf['wkb']
             
             modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
             ids_to_modify = list(modify_gdf['updating'])
             data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
-            modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
             data_gdf = pd.concat([data_gdf, modify_gdf])
 
             delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
@@ -155,7 +151,7 @@ class Indicator():
 
         return data_gdf
 
-    def load_nodes_and_edges_from_cache(self):
+    def load_nodes_from_cache(self):
         resource = 'node'
         parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
 
@@ -163,12 +159,38 @@ class Indicator():
             raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
 
         try:
-            base_gdf = gpd.read_parquet(parquet_path)
-            base_gdf.set_crs(4326, inplace=True)
-            nodes = base_gdf
+            data_gdf = gpd.read_parquet(parquet_path)
+            data_gdf.set_crs(4326, inplace=True)
         except Exception as e:
             print(f"Error al leer el archivo {parquet_path}: {str(e)}")
 
+        endpoint = f'{self.server_address}/api/{resource}/?scenario={self.scenario}&raw=True&fields=id,osm_id,scenario,project,data_source,updating,change_type,source_type,wkb'
+        response = requests.get(endpoint)
+        data = response.json()
+        delta_df = pd.DataFrame.from_records(data)
+
+        if len(delta_df):
+            delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+            del delta_df['wkb']
+            delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
+            delta_gdf.set_crs(4326, inplace=True)
+            
+            modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+            ids_to_modify = list(modify_gdf['updating'])
+            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+            data_gdf = pd.concat([data_gdf, modify_gdf])
+
+            delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+            ids_to_delete = list(delete_gdf['updating']) 
+            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+
+            create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+            data_gdf = pd.concat([data_gdf, create_gdf])
+        
+        nodes = data_gdf.copy()
+        return nodes
+
+    def load_edges_from_cache(self):
         resource = 'street'
         parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
 
@@ -176,13 +198,36 @@ class Indicator():
             raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
 
         try:
-            base_gdf = gpd.read_parquet(parquet_path)
-            base_gdf.set_crs(4326, inplace=True)
-            edges = base_gdf
+            data_gdf = gpd.read_parquet(parquet_path)
+            data_gdf.set_crs(4326, inplace=True)
         except Exception as e:
             print(f"Error al leer el archivo {parquet_path}: {str(e)}")
 
-        return nodes, edges
+        endpoint = f'{self.server_address}/api/{resource}/?scenario={self.scenario}&raw=True&fields=id,name,osm_id,osm_src,osm_dst,src,dst,max_speed,lanes,scenario,project,data_source,updating,change_type,source_type,wkb'
+        response = requests.get(endpoint)
+        data = response.json()
+        delta_df = pd.DataFrame.from_records(data)
+
+        if len(delta_df):
+            delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+            del delta_df['wkb']
+            delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
+            delta_gdf.set_crs(4326, inplace=True)
+            
+            modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+            ids_to_modify = list(modify_gdf['updating'])
+            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+            data_gdf = pd.concat([data_gdf, modify_gdf])
+
+            delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+            ids_to_delete = list(delete_gdf['updating']) 
+            data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+
+            create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+            data_gdf = pd.concat([data_gdf, create_gdf])
+        
+        edges = data_gdf.copy()
+        return edges
     
     def load_nodes_and_edges(self):
         endpoint = f'{self.server_address}/api/node/?scenario={self.scenario}&fields=None'
@@ -466,7 +511,7 @@ class Indicator():
         
     def export_data(self):
         print('exporting data')
-        
+
         output_path = f'/usr/src/app/shared/zone_{self.zone}/bus_stops_proximity/result{self.result}{"_geo" if self.geo_output else ""}.json'
 
         if self.geo_output:
