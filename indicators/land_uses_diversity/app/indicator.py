@@ -35,29 +35,18 @@ class Indicator():
         self.y_spacing = int(os.getenv('y_spacing', 50))
         self.geo_input = os.getenv('geo_input', 'False') == 'True'
         self.geo_output = os.getenv('geo_output', 'False') == 'True'
+        self.geometry = os.getenv('wkb', 'False') == 'True'
         self.local = os.getenv('local', 'False') == 'True'
         self.cache = os.getenv('cache', 'False') == 'True'
     
     def load_data(self):
         print('loading data')
 
-        output_path = f'/usr/src/app/shared/zone_{self.zone}/data/landuse_diversity.parquet'
-
-        if os.path.exists(output_path):
-            print(f"El archivo {output_path} ya existe.")
-        else:
-            print(f"El archivo {output_path} no existe.")
+        output_path = f'/usr/src/app/shared/landuse_diversity.parquet'
         
-        print()
         output_dir = os.path.dirname(output_path)
 
         if os.path.exists(output_dir):
-            files_and_dirs = os.listdir(output_dir)
-            print("Contents of the directory:")
-            for item in files_and_dirs:
-                print(item)
-
-            print()
             for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
                 print(f'Current directory: {dirpath}')
                 for filename in filenames:
@@ -67,17 +56,19 @@ class Indicator():
         
         if self.cache:
             self.land_uses = self.load_land_uses_from_cache()
-            print('land_uses:', len(self.land_uses))
+            print('cached land_uses:', len(self.land_uses))
+
             self.h3_cells = self.load_h3_cells_from_cache()
-            print('h3_cells:', len(self.h3_cells))
+            print('cached h3_cells:', len(self.h3_cells))
         else:        
-            print('1')
             self.area = self.load_area_of_interest()
-            print('2')
+            print('area:', len(self.area))
+
             self.land_uses = self.load_land_uses()
-            print('3')
+            print('land_uses:', len(self.land_uses))
+
             self.h3_cells = self.load_h3_cells()
-            print('4')
+            print('h3_cells:', len(self.h3_cells))
         pass
     
     def load_area_of_interest(self):
@@ -217,14 +208,8 @@ class Indicator():
         grid_points[hex_col] = grid_points.apply(lambda p: h3.latlng_to_cell(p.geometry.y, p.geometry.x, self.resolution), 1)
         h3_cells = grid_points[[hex_col]].drop_duplicates().reset_index(drop=True)
 
-        # Función para convertir código H3 a un polígono de Shapely
-        def h3_to_polygon(hex_code):
-            boundary = h3.cell_to_boundary(hex_code)
-            boundary_corrected = [(lat, lon) for lon, lat in boundary]
-            return Polygon(boundary_corrected)
-
         # Crear una nueva columna en el DataFrame con la geometría de cada hexágono
-        h3_cells['geometry'] = h3_cells[hex_col].apply(h3_to_polygon)
+        h3_cells['geometry'] = h3_cells[hex_col].apply(lambda code: self.h3_to_polygon(code))
 
         # Convertir el DataFrame en un GeoDataFrame
         h3_cells = gpd.GeoDataFrame(h3_cells, geometry='geometry')
@@ -248,7 +233,14 @@ class Indicator():
         all_cells = pd.DataFrame(all_cells).reset_index().rename(columns={'index': 'code'})
         return all_cells
     
+    # Función para convertir código H3 a un polígono de Shapely
+    def h3_to_polygon(self, hex_code):
+        boundary = h3.cell_to_boundary(hex_code)
+        boundary_corrected = [(lat, lon) for lon, lat in boundary]
+        return Polygon(boundary_corrected)
+    
     ############################################################
+    
     
     def execute_process(self):
         print('computing indicator')
@@ -332,31 +324,29 @@ class Indicator():
 
         gdf['color'] = gdf['value'].apply(lambda v: get_color(v, 0, 2))
 
-        # gdf = gdf[['code', 'value', 'color', 'diversity', 'geometry']]
         gdf = gdf[['code', 'value', 'color', 'diversity']]
         # gdf.rename({'code': 'hex'}, inplace=True)
-        self.indicator = gdf
 
-        # UserWarning: Geometry column does not contain geometry.
-        # this code will generate that warning but is totally normal, the column
-        # is for geometry data, but here we make it str in order to serialize it
-        # also in case of uploading to database, postgres receives the geometry's wkt as string and automatically converts to wkb
-        # if not self.geo_output:
-        #     self.indicator['wkb'] = self.indicator['geometry'].apply(lambda g: g.wkb.hex())
-        #     del  self.indicator['geometry']
-        #     # self.indicator = self.indicator[['id', 'wkb']]
-        # else:
-        #     # self.indicator = self.indicator[['id', 'geometry']]
-        #     pass
-        # pass
+        if self.geometry:
+            # Crear una nueva columna en el DataFrame con la geometría de cada hexágono
+            gdf['geometry'] = gdf['code'].apply(lambda code: self.h3_to_polygon(code))
+
+            # UserWarning: Geometry column does not contain geometry.
+            # this code will generate that warning but is totally normal, the column
+            # is for geometry data, but here we make it str in order to serialize it
+            # also in case of uploading to database, postgres receives the geometry's wkt as string and automatically converts to wkb
+
+            if not self.geo_output:
+                gdf['wkb'] = gdf['geometry'].apply(lambda g: g.wkb.hex())
+                del gdf['geometry']
+
+        self.indicator = gdf
+        pass
 
     ############################################################
 
     def export_data(self):
         print('exporting data')
-
-        # df_json = self.indicator.to_json(orient='records')
-        # df_json = json.loads(df_json)
 
         output_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/result{self.result}{"_geo" if self.geo_output else ""}.json'
 
@@ -367,13 +357,6 @@ class Indicator():
             print(self.indicator.columns)
             df_json = list(self.indicator.T.to_dict().values())
             df_json_str = json.dumps(df_json, indent=4)
-            
-        output_dir = os.path.dirname(output_path)
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-
-        with open(output_path, "w") as file:
-            file.write(df_json_str)
 
         if not self.local:
             try:
@@ -383,6 +366,13 @@ class Indicator():
                 print(r.status_code)
             except Exception as e:
                 print('exporting data exception:', e)
+        else:
+            output_dir = os.path.dirname(output_path)
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+
+            with open(output_path, "w") as file:
+                file.write(df_json_str)
     
     ############################################################
 

@@ -46,27 +46,16 @@ class Indicator():
         self.geo_output = os.getenv('geo_output', 'False') == 'True'
         self.local = os.getenv('local', 'False') == 'True'
         self.cache = os.getenv('cache', 'False') == 'True'
+        self.geometry = os.getenv('wkb', 'False') == 'True'
     
     def load_data(self):
         print('loading data')
 
-        output_path = f'/usr/src/app/shared/zone_{self.zone}/data/busstop_proximity.parquet'
-
-        if os.path.exists(output_path):
-            print(f"El archivo {output_path} ya existe.")
-        else:
-            print(f"El archivo {output_path} no existe.")
+        output_path = f'/usr/src/app/shared/busstop_proximity.parquet'
         
-        print()
         output_dir = os.path.dirname(output_path)
 
         if os.path.exists(output_dir):
-            files_and_dirs = os.listdir(output_dir)
-            print("Contents of the directory:")
-            for item in files_and_dirs:
-                print(item)
-
-            print()
             for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
                 print(f'Current directory: {dirpath}')
                 for filename in filenames:
@@ -76,24 +65,32 @@ class Indicator():
         
         if self.cache:
             self.bus_stops = self.load_bus_stops_from_cache()
-            print('bus_stops:', len(self.bus_stops))
+            print('cached bus_stops:', len(self.bus_stops))
+
             nodes, edges = self.load_nodes_and_edges_from_cache()
+            
             self.nodes = nodes
+            print('cached nodes:', len(self.nodes))
+            
             self.edges = edges
-            print('nodes:', len(self.nodes))
-            print('edges:', len(self.edges))
+            print('cached edges:', len(self.edges))
+            
             self.grid_points = self.load_grid_points_from_cache()
-            print('grid_points:', len(self.grid_points))
+            print('cached grid_points:', len(self.grid_points))
         else:
             self.bus_stops = self.load_bus_stops()
             print('bus_stops:', len(self.bus_stops))
+
             nodes, edges = self.load_nodes_and_edges()
             self.nodes = nodes
-            self.edges = edges
             print('nodes:', len(self.nodes))
+
+            self.edges = edges
             print('edges:', len(self.edges))
+
             self.area = self.load_area_of_interest()
             print('area:', len(self.area))
+
             self.grid_points = self.get_grid_points_from_area(self.bus_stops, self.x_spacing, self.y_spacing)
             print('grid_points:', len(self.grid_points))
 
@@ -335,6 +332,11 @@ class Indicator():
         
         return grid_points
 
+    def h3_to_polygon(self, code):
+        boundary = h3.cell_to_boundary(code)
+        boundary = [(lat, lon) for lon, lat in boundary]
+        return Polygon(boundary)
+
     ############################################################
     # Methods
     def make_grid_points_gdf(self, gdf: gpd.GeoDataFrame, x_spacing, y_spacing) -> gpd.GeoDataFrame:
@@ -375,12 +377,10 @@ class Indicator():
 
         grid_points = self.grid_points
         grid_points['id'] = self.net.get_node_ids(grid_points['geometry'].x, grid_points['geometry'].y)
-        print('grid_points:', len(grid_points))
 
         #####################################################
 
         grid_with_nearest_node = pd.merge(grid_points, self.net.nodes_df, on='id')
-        print('grid_with_nearest_node:', len(grid_with_nearest_node))
 
         def distance_between_points(row):
             origin_x = row['geometry'].x
@@ -390,14 +390,11 @@ class Indicator():
             return ox.distance.great_circle(origin_y, origin_x, destination_y, destination_x)
 
         grid_with_nearest_node['distance_to_nearest_node'] = grid_with_nearest_node.apply(distance_between_points, axis=1)
-        print('grid_with_nearest_node:', len(grid_with_nearest_node))
 
         #####################################################
 
         accessibility = pd.merge(grid_with_nearest_node, accessibility, on='id').rename(columns={1: 'distance_to_nearest_poi'})
-        print('accessibility:', len(accessibility))
         accessibility['distance'] = accessibility['distance_to_nearest_node'] + accessibility['distance_to_nearest_poi']
-        print('accessibility:', len(accessibility))
 
         #####################################################
 
@@ -405,42 +402,15 @@ class Indicator():
         hex_col = f'code'
 
         distance = accessibility.copy()
-        print('distance:', len(distance))
 
         # here, the DataFrame creates a column with the cell code of resolution APERTURE_SIZE that contains each row point
         distance[hex_col] = distance.apply(lambda p: h3.latlng_to_cell(p.geometry.y,p.geometry.x,APERTURE_SIZE),1)
-        print('distance:', len(distance))
 
-        print("resolution", self.resolution)
-
-        for i in range(5):
-            print(distance.iloc[i])
-        
         distance_m = distance[[hex_col, 'distance']]
-        print('distance[[hex_col, distance]]:', len(distance_m))
-        for i in range(min(5, len(distance_m))):
-            print(distance_m.iloc[i])
-
         distance_m = distance_m.groupby(hex_col)
-        print('distance_m.groupby(hex_col):', len(distance_m))
-        print(distance_m)
-
         distance_m = distance_m.mean()
-        print('distance_m.mean():', len(distance_m))
-        for i in range(min(5, len(distance_m))):
-            print(distance_m.iloc[i])
-
         distance_m = distance_m.reset_index()
-        print('distance_m.reset_index():', len(distance_m))
-        for i in range(min(5, len(distance_m))):
-            print(distance_m.iloc[i])
-
-        print('distance_m:', len(distance_m))
-        for i in range(min(5, len(distance_m))):
-            print(distance_m.iloc[i])
-
-        # distance_m = distance[[hex_col, 'distance']].groupby(hex_col).mean().reset_index()
-        print('distance_m:', len(distance_m))
+        distance_m = distance[[hex_col, 'distance']].groupby(hex_col).mean().reset_index()
 
         #####################################################
 
@@ -453,17 +423,8 @@ class Indicator():
 
         max_distance = distance_m['distance'].max()
         distance_m = distance_m.fillna(max_distance)
-        print('distance_m:', len(distance_m))
 
-        # def h3_to_polygon(code):
-        #     boundary = h3.cell_to_boundary(code)
-        #     boundary = [(lat, lon) for lon, lat in boundary]
-        #     return Polygon(boundary)
-
-        # distance_m['geometry'] = distance_m['code'].apply(h3_to_polygon)
-
-        self.indicator_result = distance_m
-        print('indicator_result:', len(distance_m))
+        self.indicator = distance_m
 
         #####################################################
         
@@ -471,7 +432,7 @@ class Indicator():
         pass
 
     def adjust_backend_format(self):
-        gdf = self.indicator_result
+        gdf = self.indicator
         gdf['value'] = gdf['mins']
 
         def get_color(value, vmin, vmax):
@@ -484,46 +445,36 @@ class Indicator():
 
         gdf = gdf[['code', 'value', 'color', 'mins', 'distance', 'display_text']]
         # gdf.rename({'code': 'hex'}, inplace=True)
-        self.indicator_result = gdf
 
-        # UserWarning: Geometry column does not contain geometry.
-        # this code will generate that warning but is totally normal, the column
-        # is for geometry data, but here we make it str in order to serialize it
-        # also in case of uploading to database, postgres receives the geometry's wkt as string and automatically converts to wkb
-        
-        # if not self.geo_output:
-            # self.indicator['wkb'] = self.indicator_result['geometry'].apply(lambda g: g.wkb.hex())
-            # del  self.indicator_result['geometry']
-            # temp = self.indicator_result.copy()
-            # temp['wkb'] = temp['geometry'].apply(lambda g: g.wkb.hex())
-            # del temp['geometry']
-            # pass
-            # self.indicator = self.indicator[['id', 'wkb']]
-            # pass
-        # else:
-            # self.indicator = self.indicator[['id', 'geometry']]
-            # pass
-        # pass
+        if self.geometry:
+            # Crear una nueva columna en el DataFrame con la geometría de cada hexágono
+            gdf['geometry'] = gdf['code'].apply(lambda code: self.h3_to_polygon(code))
+
+            # UserWarning: Geometry column does not contain geometry.
+            # this code will generate that warning but is totally normal, the column
+            # is for geometry data, but here we make it str in order to serialize it
+            # also in case of uploading to database, postgres receives the geometry's wkt as string and automatically converts to wkb
+
+            if not self.geo_output:
+                gdf['wkb'] = gdf['geometry'].apply(lambda g: g.wkb.hex())
+                del  gdf['geometry']
+
+        self.indicator = gdf
+        pass
 
     ############################################################
         
     def export_data(self):
         print('exporting data')
+        
         output_path = f'/usr/src/app/shared/zone_{self.zone}/bus_stops_proximity/result{self.result}{"_geo" if self.geo_output else ""}.json'
 
         if self.geo_output:
-            df_json_str = self.indicator_result.to_json(indent=4)
+            df_json_str = self.indicator.to_json(indent=4)
             df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
         else:
-            df_json = list(self.indicator_result.T.to_dict().values())
+            df_json = list(self.indicator.T.to_dict().values())
             df_json_str = json.dumps(df_json, indent=4)
-            
-        output_dir = os.path.dirname(output_path)
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-
-        with open(output_path, "w") as file:
-            file.write(df_json_str)
 
         if not self.local:
             try:
@@ -533,6 +484,13 @@ class Indicator():
                 print(r.status_code)
             except Exception as e:
                 print('exporting data exception:', e)
+        else:
+            output_dir = os.path.dirname(output_path)
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+
+            with open(output_path, "w") as file:
+                file.write(df_json_str)
     
     ############################################################
 
