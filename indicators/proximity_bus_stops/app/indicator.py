@@ -46,7 +46,7 @@ class Indicator():
         self.geo_output = os.getenv('geo_output', 'False') == 'True'
         self.local = os.getenv('local', 'False') == 'True'
         self.cache = os.getenv('cache', 'False') == 'True'
-        self.geometry = os.getenv('wkb', 'False') == 'True'
+        self.geometry = os.getenv('geometry', 'False') == 'True'
     
     def load_data(self):
         print('loading data')
@@ -67,11 +67,11 @@ class Indicator():
             self.bus_stops = self.load_bus_stops_from_cache()
             print('cached bus_stops:', len(self.bus_stops))
 
-            self.nodes = self.load_nodes_from_cache()
-            print('cached nodes:', len(self.nodes))
-            
             self.edges = self.load_edges_from_cache()
             print('cached edges:', len(self.edges))
+            
+            self.nodes = self.load_nodes_from_cache()
+            print('cached nodes:', len(self.nodes))
             
             self.grid_points = self.load_grid_points_from_cache()
             print('cached grid_points:', len(self.grid_points))
@@ -79,12 +79,11 @@ class Indicator():
             self.bus_stops = self.load_bus_stops()
             print('bus_stops:', len(self.bus_stops))
 
-            nodes, edges = self.load_nodes_and_edges()
-            self.nodes = nodes
-            print('nodes:', len(self.nodes))
-
-            self.edges = edges
+            self.edges = self.load_edges()
             print('edges:', len(self.edges))
+
+            self.nodes = self.load_nodes()
+            print('nodes:', len(self.nodes))
 
             self.area = self.load_area_of_interest()
             print('area:', len(self.area))
@@ -187,6 +186,9 @@ class Indicator():
             create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
             nodes_gdf = pd.concat([nodes_gdf, create_gdf])
         
+        node_ids = list(set(self.edges['src'] + self.edges['dst']))
+        nodes_gdf = nodes_gdf[nodes_gdf['id'].apply(lambda id: id in node_ids)]
+
         return nodes_gdf
 
     def load_edges_from_cache(self):

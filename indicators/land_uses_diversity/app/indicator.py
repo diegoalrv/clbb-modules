@@ -35,9 +35,9 @@ class Indicator():
         self.y_spacing = int(os.getenv('y_spacing', 50))
         self.geo_input = os.getenv('geo_input', 'False') == 'True'
         self.geo_output = os.getenv('geo_output', 'False') == 'True'
-        self.geometry = os.getenv('wkb', 'False') == 'True'
         self.local = os.getenv('local', 'False') == 'True'
         self.cache = os.getenv('cache', 'False') == 'True'
+        self.geometry = os.getenv('geometry', 'False') == 'True'
     
     def load_data(self):
         print('loading data')
