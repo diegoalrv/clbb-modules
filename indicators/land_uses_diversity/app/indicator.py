@@ -53,6 +53,11 @@ class Indicator():
         #             print(f'File: {filename}')
         #         for dirname in dirnames:
         #             print(f'Directory: {dirname}')
+
+        endpoint = f'{self.server_address}/api/scenario/{self.scenario}'
+        response = requests.get(endpoint)
+        data = response.json()
+        self.projects = data['projects']
         
         if self.cache:
             self.land_uses = self.load_land_uses_from_cache()
@@ -110,30 +115,31 @@ class Indicator():
         except Exception as e:
             print(f"Error al leer el archivo {parquet_path}: {str(e)}")
 
-        endpoint = f'{self.server_address}/api/landuse/?scenario={self.scenario}&raw=True&fields=id,use,scenario,project,data_source,updating,change_type,source_type,wkb'
-        response = requests.get(endpoint)
-        data = response.json()
-        delta_df = pd.DataFrame.from_records(data)
+        for project in self.projects:
+            endpoint = f'{self.server_address}/api/landuse/?project={project}&fields=id,use,scenario,project,data_source,updating,change_type,source_type,wkb'
+            response = requests.get(endpoint)
+            data = response.json()
+            delta_df = pd.DataFrame.from_records(data)
 
-        if len(delta_df):
-            delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-            delta_gdf = gpd.GeoDataFrame(delta_df)
-            delta_gdf.set_geometry('geometry', inplace=True)
-            delta_gdf.set_crs(4326, inplace=True)
-            del delta_gdf['wkb']
-            
-            modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
-            ids_to_modify = list(modify_gdf['updating'])
-            landuses_gdf = landuses_gdf[landuses_gdf['id'].apply(lambda id: id not in ids_to_modify)]
-            modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
-            landuses_gdf = pd.concat([landuses_gdf, modify_gdf])
+            if len(delta_df):
+                delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+                delta_gdf = gpd.GeoDataFrame(delta_df)
+                delta_gdf.set_geometry('geometry', inplace=True)
+                delta_gdf.set_crs(4326, inplace=True)
+                del delta_gdf['wkb']
+                
+                modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+                ids_to_modify = list(modify_gdf['updating'])
+                landuses_gdf = landuses_gdf[landuses_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+                modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+                landuses_gdf = pd.concat([landuses_gdf, modify_gdf])
 
-            delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
-            ids_to_delete = list(delete_gdf['updating']) 
-            landuses_gdf = landuses_gdf[landuses_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+                delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+                ids_to_delete = list(delete_gdf['updating']) 
+                landuses_gdf = landuses_gdf[landuses_gdf['id'].apply(lambda id: id not in ids_to_delete)]
 
-            create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
-            landuses_gdf = pd.concat([landuses_gdf, create_gdf])
+                create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+                landuses_gdf = pd.concat([landuses_gdf, create_gdf])
 
         return landuses_gdf
     
