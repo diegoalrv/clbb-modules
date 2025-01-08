@@ -429,7 +429,10 @@ class Indicator():
     def export_data(self):
         print('exporting data')
 
-        output_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/result{self.result}{"_geo" if self.geo_output else ""}.json'
+        if self.base:
+            output_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/base{"_geo" if self.geo_output else ""}.json'
+        else:
+            output_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/result{self.result}{"_geo" if self.geo_output else ""}.json'
 
         if self.geo_output:
             df_json_str = self.indicator.to_json(indent=4)
