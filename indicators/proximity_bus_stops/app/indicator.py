@@ -346,6 +346,7 @@ class Indicator():
         return data_gdf
 
     def nodes_edges_to_net_format(self, nodes_gdf, edges_gdf):
+        print('net format a')
         nodes = pd.DataFrame(
             {
                 'id': nodes_gdf['id'].astype(int),
@@ -356,9 +357,13 @@ class Indicator():
             }
         )
 
+        print('net format b')
         nodes = gpd.GeoDataFrame(data=nodes, geometry=nodes_gdf.geometry)
+        print('net format c')
         nodes.set_index('id', inplace=True)
+        print('net format d')
         nodes.drop_duplicates(inplace=True)
+        print('net format e')
 
         edges = pd.DataFrame(
             {
@@ -369,12 +374,18 @@ class Indicator():
                 'length': edges_gdf['length'].astype(float)
             }
         )
+        print('net format f')
 
         edges['key'] = 0
+        print('net format g')
         edges['key'] = edges['key'].astype(int)
+        print('net format h')
         edges = gpd.GeoDataFrame(data=edges, geometry=edges_gdf.geometry)
+        print('net format i')
         edges.set_index(['u', 'v', 'key'], inplace=True)
+        print('net format j')
         edges.drop_duplicates(inplace=True)
+        print('net format k')
         return nodes, edges
     
     def make_network(self, nodes_gdf, edges_gdf):
