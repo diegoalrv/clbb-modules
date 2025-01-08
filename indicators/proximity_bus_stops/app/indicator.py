@@ -115,7 +115,7 @@ class Indicator():
         self.area = self.load_area_of_interest()
         print('area:', len(self.area))
 
-        self.grid_points = self.load_grid_points_from_cache()
+        self.grid_points = self.load_grid_points()
         # self.grid_points = self.get_grid_points_from_area(self.bus_stops, self.x_spacing, self.y_spacing)
         print('grid_points:', len(self.grid_points))
 
@@ -429,56 +429,23 @@ class Indicator():
         area_of_interest = area_of_interest.set_crs(4326)
         return area_of_interest
     
-    def load_grid_points(self, area):
+    def load_grid_points(self):
         grid_points = None
         
         input_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}{"_geo" if self.geo_input else ""}.json'
         print(f'opening path {input_path}')
         if os.path.exists(input_path):
-            if self.geo_input:
-                with open(input_path, "r") as file:
-                    grid_points_str = file.read()
+            with open(input_path, "r") as file:
+                grid_points_str = file.read()
 
-                grid_points = gpd.read_file(grid_points_str)
-                grid_points = grid_points.set_crs(4326)
-            else:
-                with open(input_path, "r") as file:
-                    grid_points_str = file.read()
-
-                grid_points_json = json.loads(grid_points_str)
-                grid_points = pd.DataFrame.from_records(grid_points_json)
-                grid_points_geometry = grid_points['wkb'].apply(lambda g: wkb.loads(bytes.fromhex(g)))
-                grid_points = gpd.GeoDataFrame(grid_points, geometry=grid_points_geometry)
-                grid_points = grid_points.set_crs(4326)
+            grid_points_json = json.loads(grid_points_str)
+            grid_points = pd.DataFrame.from_records(grid_points_json)
+            grid_points_geometry = grid_points['wkb'].apply(lambda g: wkb.loads(bytes.fromhex(g)))
+            grid_points = gpd.GeoDataFrame(grid_points, geometry=grid_points_geometry)
+            grid_points = grid_points.set_crs(4326)
         else:
             raise Exception({'error': 'grid_points file not found'})
 
-        return grid_points
-    
-    def load_grid_points_from_cache(self):
-        grid_points = None
-        
-        input_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}{"_geo" if self.geo_input else ""}.json'
-        print(f'opening path {input_path}')
-        if os.path.exists(input_path):
-            if self.geo_input:
-                with open(input_path, "r") as file:
-                    grid_points_str = file.read()
-
-                grid_points = gpd.read_file(grid_points_str)
-                grid_points = grid_points.set_crs(4326)
-            else:
-                with open(input_path, "r") as file:
-                    grid_points_str = file.read()
-
-                grid_points_json = json.loads(grid_points_str)
-                grid_points = pd.DataFrame.from_records(grid_points_json)
-                grid_points_geometry = grid_points['wkb'].apply(lambda g: wkb.loads(bytes.fromhex(g)))
-                grid_points = gpd.GeoDataFrame(grid_points, geometry=grid_points_geometry)
-                grid_points = grid_points.set_crs(4326)
-        else:
-            raise Exception({'error': 'grid_points file not found'})
-        
         return grid_points
 
     def h3_to_polygon(self, code):
@@ -586,7 +553,7 @@ class Indicator():
         self.indicator = distance_m
         pass
 
-    def compute_diff(self):
+    def compute_secondary(self):
         if self.base or self.base_indicator.empty:
             return
         
@@ -672,7 +639,8 @@ class Indicator():
             # df_json_str = json.dumps(df_json, indent=4)     # now useless as the str of the json is generated below to consider extra data
             
         result_json = {
-            'indicator': df_json
+            'indicator': df_json,
+            'resume': {}
         }
 
         if not self.upgrade.empty:
@@ -690,7 +658,7 @@ class Indicator():
             resume.set_index('project', inplace=True)
             resume_json = resume['percentage'].to_dict()
 
-            result_json['resume'] = resume_json
+            result_json['resume']['upgrade'] = resume_json
         
         if self.bounds and self.bounds_border:
             result_json['bounds_border'] = self.bounds_border.wkb.hex()
@@ -725,7 +693,7 @@ class Indicator():
             try:
                 if self.indicator.empty:
                     self.execute_process()
-                self.compute_diff()
+                self.compute_secondary()
             except Exception as e:
                 print('exception in execute_process:',e)
                 raise e
