@@ -658,7 +658,7 @@ class Indicator():
             resume.set_index('project', inplace=True)
             resume_json = resume['percentage'].to_dict()
 
-            result_json['resume']['upgrade'] = resume_json
+            result_json['resume'] = resume_json
         
         if self.bounds and self.bounds_border:
             result_json['bounds_border'] = self.bounds_border.wkb.hex()
