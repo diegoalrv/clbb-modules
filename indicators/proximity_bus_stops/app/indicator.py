@@ -6,8 +6,8 @@ import osmnx as ox
 import json
 import h3
 import matplotlib.pyplot as plt
-from shapely import wkb
-from shapely.geometry import Polygon
+from shapely import wkb, intersects
+from shapely.geometry import Polygon, Point
 
 import os
 import requests
@@ -16,7 +16,8 @@ import time
 class Indicator():
     def __init__(self):
         self.init_time = time.time()
-        self.indicator = None
+        self.indicator = pd.DataFrame()
+        self.upgrade = pd.DataFrame()
         self.keywords = []
 
         self.load_env_variables()
@@ -47,54 +48,75 @@ class Indicator():
         self.local = os.getenv('local', 'False') == 'True'
         self.cache = os.getenv('cache', 'False') == 'True'
         self.geometry = os.getenv('geometry', 'False') == 'True'
-    
+        self.base = os.getenv('base', 'False') == 'True'
+
+        x_min = os.getenv('x_min', None)
+        y_min = os.getenv('y_min', None)
+        x_max = os.getenv('x_max', None)
+        y_max = os.getenv('y_max', None)
+        
+        if x_min and y_min and x_max and y_max:
+            self.bounds = Polygon(shell=[
+                Point(x_min, y_min),
+                Point(x_max, y_min),
+                Point(x_max, y_max),
+                Point(x_min, y_max),
+                Point(x_min, y_min)
+            ])
+        else:
+            self.bounds = None
+
+        output_path = f'/usr/src/app/shared/busstop_proximity.parquet'
+        output_dir = os.path.dirname(output_path)
+        print(output_dir)
+        if os.path.exists(output_dir):
+            for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
+                print(f'Current directory: {dirpath}')
+                for filename in filenames:
+                    print(f'    File: {filename}')
+                for dirname in dirnames:
+                    print(f'  Directory: {dirname}')
+
     def load_data(self):
         print('loading data')
 
-        # output_path = f'/usr/src/app/shared/busstop_proximity.parquet'
-        
-        # output_dir = os.path.dirname(output_path)
-        
-        # if os.path.exists(output_dir):
-        #     for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
-        #         print(f'Current directory: {dirpath}')
-        #         for filename in filenames:
-        #             print(f'File: {filename}')
-        #         for dirname in dirnames:
-        #             print(f'Directory: {dirname}')
+        scenario = self.load_scenario()
+        self.projects = scenario['projects']
+        self.counting_projects = []
 
-        endpoint = f'{self.server_address}/api/scenario/{self.scenario}'
-        response = requests.get(endpoint)
-        data = response.json()
-        self.projects = data['projects']
-        
-        if self.cache:
-            self.bus_stops = self.load_bus_stops_from_cache()
-            print('cached bus_stops:', len(self.bus_stops))
+        if not self.base:
+            self.base_indicator = self.load_base_indicator()
 
-            self.edges = self.load_edges_from_cache()
-            print('cached edges:', len(self.edges))
-            
-            self.nodes = self.load_nodes_from_cache()
-            print('cached nodes:', len(self.nodes))
-            
-            self.grid_points = self.load_grid_points_from_cache()
-            print('cached grid_points:', len(self.grid_points))
-        else:
-            self.bus_stops = self.load_bus_stops()
-            print('bus_stops:', len(self.bus_stops))
+            if not self.base_indicator.empty and len(self.projects) == 0:
+                self.indicator = self.base_indicator
+                return
 
-            self.edges = self.load_edges()
-            print('edges:', len(self.edges))
+        # I'm commenting this because there's no tracking of changes on the
+        # projects this result was made for. So if there's a change and you
+        # ask for this result to be computed again, it will set to the same.
 
-            self.nodes = self.load_nodes()
-            print('nodes:', len(self.nodes))
+        # cached_indicator = self.load_indicator()
+        # if not cached_indicator.empty:
+        #     self.indicator = cached_indicator
+        #     return
 
-            self.area = self.load_area_of_interest()
-            print('area:', len(self.area))
+        self.bus_stops = self.load_bus_stops()
+        if 'project' not in self.bus_stops.columns:
+            self.bus_stops['project'] = None
+        print('bus_stops:', len(self.bus_stops))
 
-            self.grid_points = self.get_grid_points_from_area(self.bus_stops, self.x_spacing, self.y_spacing)
-            print('grid_points:', len(self.grid_points))
+        self.edges = self.load_edges()
+        print('edges:', len(self.edges))
+
+        self.nodes = self.load_nodes()
+        print('nodes:', len(self.nodes))
+
+        self.area = self.load_area_of_interest()
+        print('area:', len(self.area))
+
+        self.grid_points = self.load_grid_points_from_cache()
+        # self.grid_points = self.get_grid_points_from_area(self.bus_stops, self.x_spacing, self.y_spacing)
+        print('grid_points:', len(self.grid_points))
 
         a, b = self.nodes_edges_to_net_format(self.nodes, self.edges)
         print('a:', len(a))
@@ -102,53 +124,61 @@ class Indicator():
 
         net = self.make_network(a, b)
         self.net = net
+        pass
 
-    def load_bus_stops_from_cache(self):
-        resource = 'busstop'
-        parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
-
-        if not os.path.exists(parquet_path):
-            raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
-
-        try:
-            data_gdf = gpd.read_parquet(parquet_path)
-            data_gdf.set_crs(4326, inplace=True)
-        except Exception as e:
-            print(f"Error al leer el archivo {parquet_path}: {str(e)}")
-
-        for project in self.projects:
-            endpoint = f'{self.server_address}/api/busstop/?project={project}&fields=id,name,bus_stop_type,scenario,project,data_source,updating,change_type,source_type,wkb'
-            response = requests.get(endpoint)
-            data = response.json()
-            delta_df = pd.DataFrame.from_records(data)
-
-            if len(delta_df):
-                delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-                del delta_df['wkb']
-                delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
-                delta_gdf.set_crs(4326, inplace=True)
-                
-                modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
-                ids_to_modify = list(modify_gdf['updating'])
-                data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
-                data_gdf = pd.concat([data_gdf, modify_gdf])
-
-                delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
-                ids_to_delete = list(delete_gdf['updating']) 
-                data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
-
-                create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
-                data_gdf = pd.concat([data_gdf, create_gdf])
-
-        return data_gdf
-    
-    def load_bus_stops(self):
-        endpoint = f'{self.server_address}/api/busstop/?scenario={self.scenario}&fields=name,bus_stop_type,scenario,project,data_source,updating,change_type,source_type'
+    def load_scenario(self):
+        endpoint = f'{self.server_address}/api/scenario/{self.scenario}'
         response = requests.get(endpoint)
         data = response.json()
-        data_df = pd.DataFrame.from_records(data)
+        return data
 
-        data_df['geometry'] = data_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+    def load_base_indicator(self):
+        input_path = f'/usr/src/app/shared/zone_{self.zone}/bus_stops_proximity/base{"_geo" if self.geo_output else ""}.json'
+
+        if not os.path.exists(input_path):
+            print(f"El archivo {input_path} no existe.")
+            raise FileNotFoundError(f"El archivo {input_path} no existe.")
+
+        with open(input_path, "r") as file:
+            df_json_str = file.read()
+
+        base_indicator_json = json.loads(df_json_str)
+
+        if self.geo_output:
+            base_indicator = gpd.GeoDataFrame.from_features(base_indicator_json['features'])
+        else:
+            base_indicator = pd.DataFrame.from_records(base_indicator_json['indicator'])
+            print(base_indicator.columns)
+            base_indicator['geometry'] = base_indicator['wkb'].apply(lambda g: wkb.loads(g))
+            del base_indicator['wkb']
+            base_indicator = gpd.GeoDataFrame(base_indicator, geometry='geometry')
+        
+        return base_indicator
+
+    # in case it was already generated and is stored in the server
+    def load_indicator(self):
+        data_df = pd.DataFrame()
+
+        projects_csv = ','.join([str(p) for p in self.projects])
+        endpoint = f'{self.server_address}/api/result/?projects={projects_csv}'
+        response = requests.get(endpoint)
+        if response.status_code != 200:
+            return data_df
+        
+        data = response.json()
+        result_id = data['id']
+        endpoint = f'{self.server_address}/api/result/{result_id}/data/'
+        response = requests.get(endpoint)
+        if response.status_code != 200:
+            return data_df
+        
+        data = response.json()
+        if 'indicator' not in data.keys():
+            return data_df
+
+        data_df = pd.DataFrame.from_records(data['indicator'])
+        if 'wkb' in data_df.columns:
+            data_df['geometry'] = data_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
         del data_df['wkb']
         data_gdf = gpd.GeoDataFrame(data_df)
         data_gdf.set_geometry('geometry', inplace=True)
@@ -156,123 +186,163 @@ class Indicator():
 
         return data_gdf
 
-    def load_nodes_from_cache(self):
-        resource = 'node'
-        parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
+    def load_bus_stops(self):
+        if self.cache:
+            parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/busstop.parquet'
 
-        if not os.path.exists(parquet_path):
-            raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
+            if not os.path.exists(parquet_path):
+                raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
 
-        try:
-            nodes_gdf = gpd.read_parquet(parquet_path)
-            nodes_gdf.set_crs(4326, inplace=True)
-        except Exception as e:
-            print(f"Error al leer el archivo {parquet_path}: {str(e)}")
-
-        for project in self.projects:
-            endpoint = f'{self.server_address}/api/{resource}/?project={project}&fields=id,osm_id,scenario,project,data_source,updating,change_type,source_type,wkb'
+            try:
+                data_gdf = gpd.read_parquet(parquet_path)
+                data_gdf.set_crs(4326, inplace=True)
+            except Exception as e:
+                print(f"Error al leer el archivo {parquet_path}: {str(e)}")
+        else:
+            endpoint = f'{self.server_address}/api/busstop/?fields=name,bus_stop_type'
             response = requests.get(endpoint)
             data = response.json()
-            delta_df = pd.DataFrame.from_records(data)
 
-            if len(delta_df):
-                delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-                del delta_df['wkb']
-                delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
-                delta_gdf.set_crs(4326, inplace=True)
-                
-                modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
-                ids_to_modify = list(modify_gdf['updating'])
-                nodes_gdf = nodes_gdf[nodes_gdf['id'].apply(lambda id: id not in ids_to_modify)]
-                nodes_gdf = pd.concat([nodes_gdf, modify_gdf])
+            data_df = pd.DataFrame.from_records(data)
+            data_df['geometry'] = data_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+            del data_df['wkb']
+            data_gdf = gpd.GeoDataFrame(data_df)
+            data_gdf.set_geometry('geometry', inplace=True)
+            data_gdf.set_crs(4326, inplace=True)
 
-                delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
-                ids_to_delete = list(delete_gdf['updating']) 
-                nodes_gdf = nodes_gdf[nodes_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+        if not self.base:
+            for current_project in self.projects:
+                endpoint = f'{self.server_address}/api/busstop/?project={current_project}&fields=id,name,bus_stop_type,scenario,project,data_source,updating,change_type,source_type,wkb'
+                response = requests.get(endpoint)
+                data = response.json()
+                delta_df = pd.DataFrame.from_records(data)
 
-                create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
-                nodes_gdf = pd.concat([nodes_gdf, create_gdf])
-        
-        node_ids = list(set(list(self.edges['src']) + list(self.edges['dst'])))
-        print('len(node_ids):', len(node_ids))
-        print('node_ids:', node_ids[:100])
+                if len(delta_df):
+                    self.counting_projects.append(current_project)
 
-        
-        print(nodes_gdf.columns)
-        print(nodes_gdf['id'].iloc[:100])
-        
-        print('before filtering')
-        print('len(nodes_gdf):', len(nodes_gdf))
-        nodes_gdf = nodes_gdf[nodes_gdf['id'].apply(lambda id: id in node_ids)]
-        print('after filtering')
-        print('len(nodes_gdf):', len(nodes_gdf))
+                    delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+                    del delta_df['wkb']
+                    delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
+                    delta_gdf.set_crs(4326, inplace=True)
 
-        return nodes_gdf
+                    modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+                    ids_to_modify = list(modify_gdf['updating'])
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+                    data_gdf = pd.concat([data_gdf, modify_gdf])
 
-    def load_edges_from_cache(self):
-        resource = 'street'
-        parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
+                    delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+                    ids_to_delete = list(delete_gdf['updating']) 
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
 
-        if not os.path.exists(parquet_path):
-            raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
+                    create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+                    data_gdf = pd.concat([data_gdf, create_gdf])
 
-        try:
-            edges_gdf = gpd.read_parquet(parquet_path)
-            edges_gdf.set_crs(4326, inplace=True)
-        except Exception as e:
-            print(f"Error al leer el archivo {parquet_path}: {str(e)}")
-
-        for project in self.projects:
-            endpoint = f'{self.server_address}/api/{resource}/?project={project}&fields=id,name,osm_id,osm_src,osm_dst,src,dst,max_speed,lanes,length,scenario,project,data_source,updating,change_type,source_type,wkb'
-            response = requests.get(endpoint)
-            data = response.json()
-            delta_df = pd.DataFrame.from_records(data)
-
-            if len(delta_df):
-                delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-                del delta_df['wkb']
-                delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
-                delta_gdf.set_crs(4326, inplace=True)
-                
-                modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
-                ids_to_modify = list(modify_gdf['updating'])
-                edges_gdf = edges_gdf[edges_gdf['id'].apply(lambda id: id not in ids_to_modify)]
-                edges_gdf = pd.concat([edges_gdf, modify_gdf])
-
-                delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
-                ids_to_delete = list(delete_gdf['updating']) 
-                edges_gdf = edges_gdf[edges_gdf['id'].apply(lambda id: id not in ids_to_delete)]
-
-                create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
-                edges_gdf = pd.concat([edges_gdf, create_gdf])
-        
-        return edges_gdf
-    
-    def load_nodes(self):
-        endpoint = f'{self.server_address}/api/node/?scenario={self.scenario}&fields=osm_id'
-        response = requests.get(endpoint)
-        data = response.json()
-        df = pd.DataFrame.from_records(data)
-        df['geometry'] = df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-        del df['wkb']
-        gdf = gpd.GeoDataFrame(df)
-        gdf.set_geometry('geometry')
-        nodes = gdf.copy()
-
-        return nodes
+        return data_gdf
 
     def load_edges(self):
-        endpoint = f'{self.server_address}/api/street/?scenario={self.scenario}&fields=length,src,dst'
-        response = requests.get(endpoint)
-        data = response.json()
-        df = pd.DataFrame.from_records(data)
-        df['geometry'] = df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-        del df['wkb']
-        gdf = gpd.GeoDataFrame(df)
-        gdf.set_geometry('geometry')
-        edges = gdf.copy()
+        if self.cache:
+            parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/street.parquet'
 
-        return edges
+            if not os.path.exists(parquet_path):
+                raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
+
+            try:
+                data_gdf = gpd.read_parquet(parquet_path)
+                data_gdf.set_crs(4326, inplace=True)
+            except Exception as e:
+                print(f"Error al leer el archivo {parquet_path}: {str(e)}")
+        else:
+            endpoint = f'{self.server_address}/api/street/?fields=length,src,dst'
+            response = requests.get(endpoint)
+            data = response.json()
+
+            data_df = pd.DataFrame.from_records(data)
+            data_df['geometry'] = data_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+            del data_df['wkb']
+            data_gdf = gpd.GeoDataFrame(data_df)
+            data_gdf.set_geometry('geometry')
+            data_gdf.set_crs(4326, inplace=True)
+
+        if not self.base:
+            for current_project in self.projects:
+                endpoint = f'{self.server_address}/api/street/?project={current_project}&fields=length,src,dst,scenario,project,data_source,updating,change_type,source_type'
+                response = requests.get(endpoint)
+                data = response.json()
+                delta_df = pd.DataFrame.from_records(data)
+
+                if len(delta_df):
+                    delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+                    del delta_df['wkb']
+                    delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
+                    delta_gdf.set_crs(4326, inplace=True)
+
+                    modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+                    ids_to_modify = list(modify_gdf['updating'])
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+                    data_gdf = pd.concat([data_gdf, modify_gdf])
+
+                    delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+                    ids_to_delete = list(delete_gdf['updating']) 
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+
+                    create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+                    data_gdf = pd.concat([data_gdf, create_gdf])
+
+        return data_gdf
+    
+    def load_nodes(self):
+        if self.cache:
+            parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/node.parquet'
+
+            if not os.path.exists(parquet_path):
+                raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
+
+            try:
+                data_gdf = gpd.read_parquet(parquet_path)
+                data_gdf.set_crs(4326, inplace=True)
+            except Exception as e:
+                print(f"Error al leer el archivo {parquet_path}: {str(e)}")
+        else:
+            endpoint = f'{self.server_address}/api/node/?fields=osm_id'
+            response = requests.get(endpoint)
+            data = response.json()
+
+            data_df = pd.DataFrame.from_records(data)
+            data_df['geometry'] = data_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+            del data_df['wkb']
+            data_gdf = gpd.GeoDataFrame(data_df)
+            data_gdf.set_geometry('geometry')
+            data_gdf.set_crs(4326, inplace=True)
+
+        if not self.base:
+            for current_project in self.projects:
+                endpoint = f'{self.server_address}/api/node/?project={current_project}&fields=id,name,bus_stop_type,scenario,project,data_source,updating,change_type,source_type,wkb'
+                response = requests.get(endpoint)
+                data = response.json()
+                delta_df = pd.DataFrame.from_records(data)
+
+                if len(delta_df):
+                    delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+                    del delta_df['wkb']
+                    delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
+                    delta_gdf.set_crs(4326, inplace=True)
+
+                    modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+                    ids_to_modify = list(modify_gdf['updating'])
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+                    data_gdf = pd.concat([data_gdf, modify_gdf])
+
+                    delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+                    ids_to_delete = list(delete_gdf['updating']) 
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+
+                    create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+                    data_gdf = pd.concat([data_gdf, create_gdf])
+
+        node_ids = list(set(list(self.edges['src']) + list(self.edges['dst'])))
+        data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id in node_ids)]
+
+        return data_gdf
 
     def nodes_edges_to_net_format(self, nodes_gdf, edges_gdf):
         nodes = pd.DataFrame(
@@ -309,20 +379,20 @@ class Indicator():
     def make_network(self, nodes_gdf, edges_gdf):
         net = None
         # Redirige la salida estándar a /dev/null (un objeto nulo)
-        with open(os.devnull, 'w') as fnull:
+        # with open(os.devnull, 'w') as fnull:
             # Redirige la salida estándar a /dev/null temporalmente
-            old_stdout = os.dup(1)
-            os.dup2(fnull.fileno(), 1)
+            # old_stdout = os.dup(1)
+            # os.dup2(fnull.fileno(), 1)
             # Tu código para crear la red de Pandana aquí
-            net = pdna.Network(
-                nodes_gdf['lon'].astype(float),
-                nodes_gdf['lat'].astype(float),
-                edges_gdf['from'].astype(int),
-                edges_gdf['to'].astype(int),
-                edges_gdf[['length']]
-            )
+        net = pdna.Network(
+            nodes_gdf['lon'].astype(float),
+            nodes_gdf['lat'].astype(float),
+            edges_gdf['from'].astype(int),
+            edges_gdf['to'].astype(int),
+            edges_gdf[['length']]
+        )
             # Restaura la salida estándar original
-            os.dup2(old_stdout, 1)
+            # os.dup2(old_stdout, 1)
         return net
     
     def load_area_of_interest(self):
@@ -433,12 +503,13 @@ class Indicator():
 
         #####################################################
 
-        max_distance=25000 ## in meters
+        max_distance = 25000 ## in meters
         num_pois = 1
 
         category = 'bus_stops'
-        self.net.set_pois(category=category, maxdist = max_distance, maxitems=num_pois, x_col=self.bus_stops['geometry'].x, y_col=self.bus_stops['geometry'].y)
-        accessibility = self.net.nearest_pois(distance = max_distance, category=category, num_pois=num_pois)
+        self.net.set_pois(category=category, maxdist = 10000000, maxitems=num_pois, x_col=self.bus_stops['geometry'].x, y_col=self.bus_stops['geometry'].y)
+        accessibility = self.net.nearest_pois(distance = 10000000, category=category, num_pois=num_pois, include_poi_ids=True)
+        accessibility[1] = accessibility[1].apply(lambda v: max_distance if v > max_distance else v)
 
         #####################################################
 
@@ -460,7 +531,7 @@ class Indicator():
 
         #####################################################
 
-        accessibility = pd.merge(grid_with_nearest_node, accessibility, on='id').rename(columns={1: 'distance_to_nearest_poi'})
+        accessibility = pd.merge(grid_with_nearest_node, accessibility, on='id').rename(columns={1: 'distance_to_nearest_poi', 'poi1': 'bus_stop_id'})
         accessibility['distance'] = accessibility['distance_to_nearest_node'] + accessibility['distance_to_nearest_poi']
 
         #####################################################
@@ -473,11 +544,16 @@ class Indicator():
         # here, the DataFrame creates a column with the cell code of resolution APERTURE_SIZE that contains each row point
         distance[hex_col] = distance.apply(lambda p: h3.latlng_to_cell(p.geometry.y,p.geometry.x,APERTURE_SIZE),1)
 
-        distance_m = distance[[hex_col, 'distance']]
-        distance_m = distance_m.groupby(hex_col)
-        distance_m = distance_m.mean()
-        distance_m = distance_m.reset_index()
-        distance_m = distance[[hex_col, 'distance']].groupby(hex_col).mean().reset_index()
+        distance['bus_stop_id'] = distance['bus_stop_id'].astype(int)
+        distance['project'] = distance['bus_stop_id'].apply(lambda v: self.bus_stops.loc[v]['project'])
+
+        # i think this should me the median() not the mean()
+        # points close to others will have almost the same times, except for the cases of
+        # walls, cliffs or elements that divide the groups within a cell.
+        # in case there's a wall, left side is 15 min of a busstop and right side 60 min,
+        # sending a result of around 37.5 mins is not accurate. instead, picking the
+        # median, the result will be around 15 mins or around 60 mins
+        distance_m = distance[[hex_col, 'distance', 'project']].groupby(hex_col).median().reset_index()
 
         #####################################################
 
@@ -489,14 +565,49 @@ class Indicator():
         #####################################################
 
         max_distance = distance_m['distance'].max()
-        distance_m = distance_m.fillna(max_distance)
+        distance_m.fillna(max_distance, inplace=True)
+
+        # Crear una nueva columna en el DataFrame con la geometría de cada hexágono
+        distance_m['geometry'] = distance_m['code'].apply(self.h3_to_polygon)
+        distance_m = gpd.GeoDataFrame(distance_m, geometry='geometry')
 
         self.indicator = distance_m
-
-        #####################################################
-        
-        self.adjust_backend_format()
         pass
+
+    def compute_diff(self):
+        if self.base or self.base_indicator.empty:
+            return
+        
+        left = self.base_indicator.copy()[['code', 'mins', 'distance', 'geometry']]
+        left.rename(columns={'mins': 'base_mins', 'distance': 'base_distance'}, inplace=True)
+
+        right = self.indicator.copy()[['code', 'mins', 'distance', 'project']]
+        right.rename(columns={'mins': 'new_mins', 'distance': 'new_distance'}, inplace=True)
+
+        conclusion = left.merge(right, on='code')
+        conclusion['change_mins'] = conclusion['new_mins'] - conclusion['base_mins']
+        conclusion['change_distance'] = conclusion['new_distance'] - conclusion['base_distance']
+        self.conclusion = gpd.GeoDataFrame(conclusion, geometry='geometry')
+
+        upgrade = conclusion.copy()
+        
+        if self.bounds:
+            upgrade = upgrade[upgrade['geometry'].apply(lambda g: intersects(self.bounds, g))]
+        
+            self.bounds_border = upgrade.copy()['geometry'].union_all(method='coverage')
+            # focus_zone_gdf = gpd.GeoDataFrame.from_records([{
+            #     'geometry': bounds_border
+            # },{
+            #     'geometry': bounds_border.buffer(0.0005, join_style='mitre')
+            # }])
+            # focus_zone_gdf.plot(figsize=(15,20), color='None')
+            # focus_zone_gdf
+
+        upgrade['percentage'] = 100.0 * (upgrade['base_mins'] - upgrade['new_mins']) / upgrade['base_mins']
+        print(upgrade)
+        upgrade = upgrade.groupby('project').mean(numeric_only=True).reset_index()
+        upgrade['project'] = upgrade['project'].astype(int)
+        self.upgrade = upgrade[['project', 'percentage']]
 
     def adjust_backend_format(self):
         gdf = self.indicator
@@ -510,13 +621,10 @@ class Indicator():
 
         gdf['color'] = gdf['value'].apply(lambda v: get_color(v, 0, 60))
 
-        gdf = gdf[['code', 'value', 'color', 'mins', 'distance', 'display_text']]
+        gdf = gdf[['code', 'value', 'color', 'mins', 'distance', 'display_text', 'project', 'geometry']]
         # gdf.rename({'code': 'hex'}, inplace=True)
 
         if self.geometry:
-            # Crear una nueva columna en el DataFrame con la geometría de cada hexágono
-            gdf['geometry'] = gdf['code'].apply(lambda code: self.h3_to_polygon(code))
-
             # UserWarning: Geometry column does not contain geometry.
             # this code will generate that warning but is totally normal, the column
             # is for geometry data, but here we make it str in order to serialize it
@@ -524,7 +632,12 @@ class Indicator():
 
             if not self.geo_output:
                 gdf['wkb'] = gdf['geometry'].apply(lambda g: g.wkb.hex())
-                del  gdf['geometry']
+                del gdf['geometry']
+        else:
+            if 'geometry' in gdf.columns:
+                del gdf['geometry']
+            if 'wkb' in gdf.columns:
+                del gdf['wkb']
 
         self.indicator = gdf
         pass
@@ -534,20 +647,47 @@ class Indicator():
     def export_data(self):
         print('exporting data')
 
-        output_path = f'/usr/src/app/shared/zone_{self.zone}/bus_stops_proximity/result{self.result}{"_geo" if self.geo_output else ""}.json'
+        if self.base:
+            output_path = f'/usr/src/app/shared/zone_{self.zone}/bus_stops_proximity/base{"_geo" if self.geo_output else ""}.json'
+        else:
+            output_path = f'/usr/src/app/shared/zone_{self.zone}/bus_stops_proximity/result{self.result}{"_geo" if self.geo_output else ""}.json'
 
         if self.geo_output:
             df_json_str = self.indicator.to_json(indent=4)
             df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
         else:
             df_json = list(self.indicator.T.to_dict().values())
-            df_json_str = json.dumps(df_json, indent=4)
+            # df_json_str = json.dumps(df_json, indent=4)     # now useless as the str of the json is generated below to consider extra data
+            
+        result_json = {
+            'indicator': df_json
+        }
 
-        if not self.local:
+        if not self.upgrade.empty:
+            resume_json = self.upgrade.copy()
+            resume_json['percentage'] = round(resume_json['percentage'], 2)
+            resume_json['project'] = resume_json['project'].astype(int)
+            resume_json.set_index('project', inplace=True)
+            resume_json['percentage'].to_dict()
+
+            temp = self.upgrade.copy()
+            df_list = pd.DataFrame({'project': self.counting_projects})
+            resume = pd.merge(df_list, temp, on='project', how='left')
+            resume['percentage'] = round(resume['percentage'].fillna(0), 2)
+            resume['project'] = resume['project'].astype(int)
+            resume.set_index('project', inplace=True)
+            resume_json = resume['percentage'].to_dict()
+
+            result_json['resume'] = resume_json
+        
+        if self.bounds and self.bounds_border:
+            result_json['bounds_border'] = self.bounds_border.wkb.hex()
+
+        if not self.base and not self.local:
             try:
                 url = f'{self.server_address}/api/result/{self.result}/set_data/'
                 headers = {'Content-Type': 'application/json'}
-                r = requests.post(url, json=df_json, headers=headers, timeout=20)
+                r = requests.post(url, json=result_json, headers=headers, timeout=20)
                 print(r.status_code)
             except Exception as e:
                 print('exporting data exception:', e)
@@ -556,8 +696,9 @@ class Indicator():
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
 
+            result_json_str = json.dumps(result_json, indent=4)
             with open(output_path, "w") as file:
-                file.write(df_json_str)
+                file.write(result_json_str)
     
     ############################################################
 
@@ -570,12 +711,15 @@ class Indicator():
                 raise e
 
             try:
-                self.execute_process()
+                if self.indicator.empty:
+                    self.execute_process()
+                self.compute_diff()
             except Exception as e:
                 print('exception in execute_process:',e)
                 raise e
                 
             try:
+                self.adjust_backend_format()
                 self.export_data()
             except Exception as e:
                 print('exception in export_data:',e)
