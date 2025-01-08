@@ -82,6 +82,7 @@ class Indicator():
 
         scenario = self.load_scenario()
         self.projects = scenario['projects']
+        self.projects = [p for p in self.projects if p != 3]
         self.counting_projects = []
 
         if not self.base:
