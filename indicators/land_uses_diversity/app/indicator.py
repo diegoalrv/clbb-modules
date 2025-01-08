@@ -355,7 +355,9 @@ class Indicator():
 
         ########################################################
 
+        print('a 1')
         gdf_group = gdf_group[[hex_col, 'info_by_use']].groupby(hex_col).agg({'info_by_use':'sum'}).reset_index().rename(columns={'info_by_use': 'diversity'})
+        print('b 1')
 
         ########################################################
 
@@ -380,14 +382,18 @@ class Indicator():
         gdf_diversity['level'] = 10
 
         self.indicator = gdf_diversity
+        print('a 3')
         print(self.indicator['diversity'].max())
+        print('b 3')
 
         ########################################################        
         pass
 
     def adjust_backend_format(self):
         gdf = self.indicator
+        print('a 2')
         gdf['value'] = gdf['diversity']
+        print('b 2')
 
         def get_color(value, vmin, vmax):
             cmap = plt.cm.RdYlGn
@@ -397,7 +403,9 @@ class Indicator():
 
         gdf['color'] = gdf['value'].apply(lambda v: get_color(v, 0, 2))
 
+        print('a 4')
         gdf = gdf[['code', 'value', 'color', 'diversity']]
+        print('b 4')
         # gdf.rename({'code': 'hex'}, inplace=True)
 
         if self.geometry:
