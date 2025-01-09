@@ -532,7 +532,18 @@ class Indicator():
         # in case there's a wall, left side is 15 min of a busstop and right side 60 min,
         # sending a result of around 37.5 mins is not accurate. instead, picking the
         # median, the result will be around 15 mins or around 60 mins
-        distance_m = distance[[hex_col, 'distance', 'project']].groupby(hex_col).median().reset_index()
+        # project_of_hex = distance[[hex_col, 'project']].groupby(hex_col).max()
+        distance_m = distance[[hex_col, 'distance', 'project']]
+        distance['distance'] = pd.to_numeric(distance['distance'], errors='coerce')
+        distance_sorted = distance.sort_values(by=[hex_col, 'distance'])
+        distance_m = distance_sorted.groupby(hex_col).apply(
+            lambda group: group.iloc[len(group) // 2]  # Select the median row (rounded down if even)
+        ).reset_index(drop=True)
+
+        # distance_m['project'].fillna(np.nan)
+        # print(distance_m)
+        # distance_m = distance_m.groupby(hex_col).median().reset_index()
+        # print(distance_m)
 
         #####################################################
 
@@ -544,7 +555,7 @@ class Indicator():
         #####################################################
 
         max_distance = distance_m['distance'].max()
-        distance_m.fillna(max_distance, inplace=True)
+        distance_m['distance'] = distance_m['distance'].fillna(max_distance)
 
         # Crear una nueva columna en el DataFrame con la geometría de cada hexágono
         distance_m['geometry'] = distance_m['code'].apply(self.h3_to_polygon)
@@ -557,19 +568,24 @@ class Indicator():
         if self.base or self.base_indicator.empty:
             return
         
+        print('s 1')
         left = self.base_indicator.copy()[['code', 'mins', 'distance', 'geometry']]
         left.rename(columns={'mins': 'base_mins', 'distance': 'base_distance'}, inplace=True)
 
+        print('s 2')
         right = self.indicator.copy()[['code', 'mins', 'distance', 'project']]
         right.rename(columns={'mins': 'new_mins', 'distance': 'new_distance'}, inplace=True)
 
+        print('s 3')
         conclusion = left.merge(right, on='code')
         conclusion['change_mins'] = conclusion['new_mins'] - conclusion['base_mins']
         conclusion['change_distance'] = conclusion['new_distance'] - conclusion['base_distance']
         self.conclusion = gpd.GeoDataFrame(conclusion, geometry='geometry')
 
+        print('s 4')
         upgrade = conclusion.copy()
         
+        print('s 5')
         if self.bounds:
             upgrade = upgrade[upgrade['geometry'].apply(lambda g: intersects(self.bounds, g))]
         
@@ -582,11 +598,23 @@ class Indicator():
             # focus_zone_gdf.plot(figsize=(15,20), color='None')
             # focus_zone_gdf
 
+        print('s 6')
         upgrade['percentage'] = 100.0 * (upgrade['base_mins'] - upgrade['new_mins']) / upgrade['base_mins']
-        print(upgrade)
-        upgrade = upgrade.groupby('project').mean(numeric_only=True).reset_index()
+        print('s 7')
+        upgrade.dropna(subset=['project'], inplace=True)
+        print('s 8')
+        print(type(upgrade))
+        upgrade = upgrade.groupby('project')
+        print(type(upgrade))
+        print('s 9')
+        upgrade = upgrade.mean()
+        print('s 10')
+        upgrade = upgrade.reset_index()
+        print('s 11')
         upgrade['project'] = upgrade['project'].astype(int)
+        print('s 12')
         self.upgrade = upgrade[['project', 'percentage']]
+        print('s 13')
 
     def adjust_backend_format(self):
         gdf = self.indicator
@@ -644,11 +672,11 @@ class Indicator():
         }
 
         if not self.upgrade.empty:
-            resume_json = self.upgrade.copy()
-            resume_json['percentage'] = round(resume_json['percentage'], 2)
-            resume_json['project'] = resume_json['project'].astype(int)
-            resume_json.set_index('project', inplace=True)
-            resume_json['percentage'].to_dict()
+            # resume_json = self.upgrade.copy()
+            # resume_json['percentage'] = round(resume_json['percentage'], 2)
+            # resume_json['project'] = resume_json['project'].astype(int)
+            # resume_json.set_index('project', inplace=True)
+            # resume_json['percentage'].to_dict()
 
             temp = self.upgrade.copy()
             df_list = pd.DataFrame({'project': self.counting_projects})
