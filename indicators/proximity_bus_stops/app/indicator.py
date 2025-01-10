@@ -17,6 +17,7 @@ class Indicator():
     def __init__(self):
         self.init_time = time.time()
         self.indicator = pd.DataFrame()
+        self.secondary_data = {}
         self.upgrade = pd.DataFrame()
         self.keywords = []
 
@@ -85,6 +86,8 @@ class Indicator():
         self.projects = [p for p in self.projects if p != 3]
         self.counting_projects = []
 
+        print(self.projects)
+
         if not self.base:
             self.base_indicator = self.load_base_indicator()
 
@@ -149,7 +152,6 @@ class Indicator():
             base_indicator = gpd.GeoDataFrame.from_features(base_indicator_json['features'])
         else:
             base_indicator = pd.DataFrame.from_records(base_indicator_json['indicator'])
-            print(base_indicator.columns)
             base_indicator['geometry'] = base_indicator['wkb'].apply(lambda g: wkb.loads(g))
             del base_indicator['wkb']
             base_indicator = gpd.GeoDataFrame(base_indicator, geometry='geometry')
@@ -346,7 +348,6 @@ class Indicator():
         return data_gdf
 
     def nodes_edges_to_net_format(self, nodes_gdf, edges_gdf):
-        print('net format a')
         nodes = pd.DataFrame(
             {
                 'id': nodes_gdf['id'].astype(int),
@@ -357,13 +358,9 @@ class Indicator():
             }
         )
 
-        print('net format b')
         nodes = gpd.GeoDataFrame(data=nodes, geometry=nodes_gdf.geometry)
-        print('net format c')
         nodes.set_index('id', inplace=True)
-        print('net format d')
         nodes.drop_duplicates(inplace=True)
-        print('net format e')
 
         edges = pd.DataFrame(
             {
@@ -374,18 +371,12 @@ class Indicator():
                 'length': edges_gdf['length'].astype(float)
             }
         )
-        print('net format f')
 
         edges['key'] = 0
-        print('net format g')
         edges['key'] = edges['key'].astype(int)
-        print('net format h')
         edges = gpd.GeoDataFrame(data=edges, geometry=edges_gdf.geometry)
-        print('net format i')
         edges.set_index(['u', 'v', 'key'], inplace=True)
-        print('net format j')
         edges.drop_duplicates(inplace=True)
-        print('net format k')
         return nodes, edges
     
     def make_network(self, nodes_gdf, edges_gdf):
@@ -478,15 +469,17 @@ class Indicator():
         return grid_points
 
     def execute_process(self):
-        print('computing indicator')
+        print('computing indicator 2')
 
         #####################################################
 
         max_distance = 25000 ## in meters
         num_pois = 1
 
+        self.bus_stops.set_index('id', inplace=True)
+
         category = 'bus_stops'
-        self.net.set_pois(category=category, maxdist = 10000000, maxitems=num_pois, x_col=self.bus_stops['geometry'].x, y_col=self.bus_stops['geometry'].y)
+        self.net.set_pois(category=category, maxdist = 10000000, maxitems=num_pois, x_col=self.bus_stops['geometry'].x, y_col=self.bus_stops['geometry'].y,)
         accessibility = self.net.nearest_pois(distance = 10000000, category=category, num_pois=num_pois, include_poi_ids=True)
         accessibility[1] = accessibility[1].apply(lambda v: max_distance if v > max_distance else v)
 
@@ -522,9 +515,18 @@ class Indicator():
 
         # here, the DataFrame creates a column with the cell code of resolution APERTURE_SIZE that contains each row point
         distance[hex_col] = distance.apply(lambda p: h3.latlng_to_cell(p.geometry.y,p.geometry.x,APERTURE_SIZE),1)
+        
+        bus_stops_project = self.bus_stops[['project']]
+        bus_stops_project.reset_index(inplace=True)
+        bus_stops_project.rename(columns={'id': 'bus_stop_id'}, inplace=True)
 
         distance['bus_stop_id'] = distance['bus_stop_id'].astype(int)
-        distance['project'] = distance['bus_stop_id'].apply(lambda v: self.bus_stops.loc[v]['project'])
+        distance = distance.merge(bus_stops_project, how='left', on='bus_stop_id')
+        distance['project'] = distance['project'].fillna(np.nan)
+       
+        distance_m = distance[[hex_col, 'distance', 'project']]
+        distance_m = distance_m.sort_values(by=[hex_col, 'distance'])
+        distance_by_hex = distance_m.groupby(hex_col)
 
         # i think this should me the median() not the mean()
         # points close to others will have almost the same times, except for the cases of
@@ -532,18 +534,8 @@ class Indicator():
         # in case there's a wall, left side is 15 min of a busstop and right side 60 min,
         # sending a result of around 37.5 mins is not accurate. instead, picking the
         # median, the result will be around 15 mins or around 60 mins
-        # project_of_hex = distance[[hex_col, 'project']].groupby(hex_col).max()
-        distance_m = distance[[hex_col, 'distance', 'project']]
-        distance['distance'] = pd.to_numeric(distance['distance'], errors='coerce')
-        distance_sorted = distance.sort_values(by=[hex_col, 'distance'])
-        distance_m = distance_sorted.groupby(hex_col).apply(
-            lambda group: group.iloc[len(group) // 2]  # Select the median row (rounded down if even)
-        ).reset_index(drop=True)
 
-        # distance_m['project'].fillna(np.nan)
-        # print(distance_m)
-        # distance_m = distance_m.groupby(hex_col).median().reset_index()
-        # print(distance_m)
+        distance_m = distance_by_hex.apply(lambda group: group.iloc[len(group) // 2]).reset_index(drop=True)
 
         #####################################################
 
@@ -561,31 +553,26 @@ class Indicator():
         distance_m['geometry'] = distance_m['code'].apply(self.h3_to_polygon)
         distance_m = gpd.GeoDataFrame(distance_m, geometry='geometry')
 
+        distance_m['distance'] = round(distance_m['distance'], 2)
+        distance_m['mins'] = round(distance_m['mins'], 2)
+        
         self.indicator = distance_m
         pass
 
-    def compute_secondary(self):
-        if self.base or self.base_indicator.empty:
-            return
-        
-        print('s 1')
+    def compute_secondary(self):        
         left = self.base_indicator.copy()[['code', 'mins', 'distance', 'geometry']]
         left.rename(columns={'mins': 'base_mins', 'distance': 'base_distance'}, inplace=True)
 
-        print('s 2')
         right = self.indicator.copy()[['code', 'mins', 'distance', 'project']]
         right.rename(columns={'mins': 'new_mins', 'distance': 'new_distance'}, inplace=True)
 
-        print('s 3')
         conclusion = left.merge(right, on='code')
         conclusion['change_mins'] = conclusion['new_mins'] - conclusion['base_mins']
         conclusion['change_distance'] = conclusion['new_distance'] - conclusion['base_distance']
         self.conclusion = gpd.GeoDataFrame(conclusion, geometry='geometry')
-
-        print('s 4')
+        
         upgrade = conclusion.copy()
         
-        print('s 5')
         if self.bounds:
             upgrade = upgrade[upgrade['geometry'].apply(lambda g: intersects(self.bounds, g))]
         
@@ -598,23 +585,22 @@ class Indicator():
             # focus_zone_gdf.plot(figsize=(15,20), color='None')
             # focus_zone_gdf
 
-        print('s 6')
         upgrade['percentage'] = 100.0 * (upgrade['base_mins'] - upgrade['new_mins']) / upgrade['base_mins']
-        print('s 7')
         upgrade.dropna(subset=['project'], inplace=True)
-        print('s 8')
-        print(type(upgrade))
+        upgrade = upgrade[['project', 'percentage']].reset_index(drop=True)
         upgrade = upgrade.groupby('project')
-        print(type(upgrade))
-        print('s 9')
         upgrade = upgrade.mean()
-        print('s 10')
         upgrade = upgrade.reset_index()
-        print('s 11')
         upgrade['project'] = upgrade['project'].astype(int)
-        print('s 12')
-        self.upgrade = upgrade[['project', 'percentage']]
-        print('s 13')
+
+        temp = upgrade.copy()
+        df_list = pd.DataFrame({'project': self.counting_projects})
+        result = pd.merge(df_list, temp, on='project', how='left')
+        result['percentage'] = round(result['percentage'].fillna(0), 2)
+        result['project'] = result['project'].astype(int)
+        result.set_index('project', inplace=True)
+        improvement_percentage = result['percentage'].to_dict()
+        self.secondary_data['improvement_percentage'] = improvement_percentage
 
     def adjust_backend_format(self):
         gdf = self.indicator
@@ -659,35 +645,22 @@ class Indicator():
         else:
             output_path = f'/usr/src/app/shared/zone_{self.zone}/bus_stops_proximity/result{self.result}{"_geo" if self.geo_output else ""}.json'
 
+        self.indicator.replace({np.nan: None}, inplace=True)
         if self.geo_output:
             df_json_str = self.indicator.to_json(indent=4)
             df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
         else:
             df_json = list(self.indicator.T.to_dict().values())
             # df_json_str = json.dumps(df_json, indent=4)     # now useless as the str of the json is generated below to consider extra data
-            
+
         result_json = {
             'indicator': df_json,
             'resume': {}
         }
 
-        if not self.upgrade.empty:
-            # resume_json = self.upgrade.copy()
-            # resume_json['percentage'] = round(resume_json['percentage'], 2)
-            # resume_json['project'] = resume_json['project'].astype(int)
-            # resume_json.set_index('project', inplace=True)
-            # resume_json['percentage'].to_dict()
+        for key in self.secondary_data.keys():
+            result_json['resume'][key] = self.secondary_data[key]
 
-            temp = self.upgrade.copy()
-            df_list = pd.DataFrame({'project': self.counting_projects})
-            resume = pd.merge(df_list, temp, on='project', how='left')
-            resume['percentage'] = round(resume['percentage'].fillna(0), 2)
-            resume['project'] = resume['project'].astype(int)
-            resume.set_index('project', inplace=True)
-            resume_json = resume['percentage'].to_dict()
-
-            result_json['resume'] = resume_json
-        
         if self.bounds and self.bounds_border:
             result_json['bounds_border'] = self.bounds_border.wkb.hex()
 
@@ -721,7 +694,9 @@ class Indicator():
             try:
                 if self.indicator.empty:
                     self.execute_process()
-                self.compute_secondary()
+
+                if not self.base and not self.base_indicator.empty:
+                    self.compute_secondary()
             except Exception as e:
                 print('exception in execute_process:',e)
                 raise e
