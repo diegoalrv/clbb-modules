@@ -708,7 +708,7 @@ class Indicator():
             'indicator': df_json,
         }
 
-        if len(self.secondary_data.keys()) > 0:
+        if len(self.secondary_data) > 0:
             result_json['resume'] = self.secondary_data
 
         if self.bounds and self.bounds_border:
