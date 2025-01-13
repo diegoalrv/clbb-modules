@@ -18,6 +18,7 @@ class Indicator():
         self.init_time = time.time()
         self.indicator = pd.DataFrame()
         self.secondary_data = {}
+        self.secondary_type = 'lower'
         self.upgrade = pd.DataFrame()
         self.keywords = []
 
@@ -85,6 +86,9 @@ class Indicator():
         self.projects = scenario['projects']
         self.projects = [p for p in self.projects if p != 3]
         self.counting_projects = []
+
+        imported_projects = scenario['imported_projects']
+        self.projects_name = {p['id']: p['name'] for p in imported_projects}
 
         print(self.projects)
 
@@ -560,6 +564,8 @@ class Indicator():
         pass
 
     def compute_secondary(self):        
+        # Project change
+        
         left = self.base_indicator.copy()[['code', 'mins', 'distance', 'geometry']]
         left.rename(columns={'mins': 'base_mins', 'distance': 'base_distance'}, inplace=True)
 
@@ -585,7 +591,7 @@ class Indicator():
             # focus_zone_gdf.plot(figsize=(15,20), color='None')
             # focus_zone_gdf
 
-        upgrade['percentage'] = 100.0 * (upgrade['base_mins'] - upgrade['new_mins']) / upgrade['base_mins']
+        upgrade['percentage'] = 100.0 * -1.0 * (upgrade['new_mins'] - upgrade['base_mins']) / upgrade['base_mins']
         upgrade.dropna(subset=['project'], inplace=True)
         upgrade = upgrade[['project', 'percentage']].reset_index(drop=True)
         upgrade = upgrade.groupby('project')
@@ -597,10 +603,44 @@ class Indicator():
         df_list = pd.DataFrame({'project': self.counting_projects})
         result = pd.merge(df_list, temp, on='project', how='left')
         result['percentage'] = round(result['percentage'].fillna(0), 2)
-        result['project'] = result['project'].astype(int)
-        result.set_index('project', inplace=True)
-        improvement_percentage = result['percentage'].to_dict()
+        result = result[['project', 'percentage']]
+        result['label'] = result['project'].apply(lambda project: self.projects_name[project])
+        # result['label'] = self.projects_name[result['project']]
+        improvement_percentage_data = result.to_dict(orient='records')
+
+        improvement_percentage = {}
+        improvement_percentage['index'] = 1
+        improvement_percentage['type'] = 'project_change'
+        improvement_percentage['data'] = improvement_percentage_data
+        improvement_percentage['positive'] = True
+        improvement_percentage['name'] = 'Mejora de proyectos'
+        improvement_percentage['unit'] = '%'
+        improvement_percentage['unit_short'] = '%'
+
         self.secondary_data['improvement_percentage'] = improvement_percentage
+
+        # Histogram
+
+        histogram_data = pd.DataFrame({'value': self.indicator['mins']})
+        histogram_data['value'] = histogram_data['value'].apply(lambda v: min(v, 60) // 15 * 15).astype(int)
+        histogram_data = pd.DataFrame({'count': histogram_data.value_counts()})
+        histogram_data.reset_index(inplace=True)
+        histogram_data.sort_values(by='value', inplace=True)
+        histogram_data['label'] = histogram_data.apply(lambda row: str(row['value']) + '-' + str(row['value'] + 15), axis=1)
+        histogram_data = histogram_data[['label','count']]
+        histogram_data = histogram_data.to_dict(orient='records')
+
+        histogram = {}
+        histogram['index'] = 0
+        histogram['type'] = 'histogram'
+        histogram['data'] = histogram_data
+        histogram['positive'] = False
+        histogram['name'] = 'Histograma'
+        histogram['unit'] = 'minutos'
+        histogram['unit_short'] = 'min'
+        
+        self.secondary_data['histogram'] = histogram
+        pass
 
     def adjust_backend_format(self):
         gdf = self.indicator
@@ -655,11 +695,12 @@ class Indicator():
 
         result_json = {
             'indicator': df_json,
-            'resume': {}
         }
 
+        if len(self.secondary_data.keys()) > 0:
+            result_json['resume'] = []
         for key in self.secondary_data.keys():
-            result_json['resume'][key] = self.secondary_data[key]
+            result_json['resume'].append(self.secondary_data[key])
 
         if self.bounds and self.bounds_border:
             result_json['bounds_border'] = self.bounds_border.wkb.hex()
