@@ -650,7 +650,7 @@ class Indicator():
         histogram['unit'] = 'minutos'
         histogram['unit_short'] = 'min'
         
-        self.secondary_data(histogram)
+        self.secondary_data.append(histogram)
         pass
 
     def adjust_backend_format(self):
