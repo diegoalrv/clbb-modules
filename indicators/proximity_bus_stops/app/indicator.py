@@ -17,8 +17,7 @@ class Indicator():
     def __init__(self):
         self.init_time = time.time()
         self.indicator = pd.DataFrame()
-        self.secondary_data = {}
-        self.secondary_type = 'lower'
+        self.secondary_data = []
         self.upgrade = pd.DataFrame()
         self.keywords = []
 
@@ -591,21 +590,24 @@ class Indicator():
             # focus_zone_gdf.plot(figsize=(15,20), color='None')
             # focus_zone_gdf
 
+        cells_to_divide_in = len(upgrade)
+
         upgrade['percentage'] = 100.0 * -1.0 * (upgrade['new_mins'] - upgrade['base_mins']) / upgrade['base_mins']
         upgrade.dropna(subset=['project'], inplace=True)
         upgrade = upgrade[['project', 'percentage']].reset_index(drop=True)
         upgrade = upgrade.groupby('project')
-        upgrade = upgrade.mean()
+        upgrade = upgrade.sum()
         upgrade = upgrade.reset_index()
         upgrade['project'] = upgrade['project'].astype(int)
+        upgrade['percentage'] = upgrade['percentage'] / cells_to_divide_in
 
         temp = upgrade.copy()
         df_list = pd.DataFrame({'project': self.counting_projects})
         result = pd.merge(df_list, temp, on='project', how='left')
         result['percentage'] = round(result['percentage'].fillna(0), 2)
         result = result[['project', 'percentage']]
-        result['label'] = result['project'].apply(lambda project: self.projects_name[project])
-        # result['label'] = self.projects_name[result['project']]
+        result['x'] = result['project'].apply(lambda project: self.projects_name[project])
+        # result['x'] = self.projects_name[result['project']]
         improvement_percentage_data = result.to_dict(orient='records')
 
         improvement_percentage = {}
@@ -617,13 +619,13 @@ class Indicator():
         improvement_percentage['unit'] = '%'
         improvement_percentage['unit_short'] = '%'
 
-        self.secondary_data['improvement_percentage'] = improvement_percentage
+        self.secondary_data.append(improvement_percentage)
 
         # Histogram
 
         histogram_data = pd.DataFrame({'value': self.indicator['mins']})
         histogram_data['value'] = histogram_data['value'].apply(lambda v: min(v, 60) // 15 * 15).astype(int)
-        histogram_data = pd.DataFrame({'count': histogram_data.value_counts()})
+        histogram_data = pd.DataFrame({'y': histogram_data.value_counts()})
         histogram_data.reset_index(inplace=True)
         histogram_data.sort_values(by='value', inplace=True)
         
@@ -631,11 +633,11 @@ class Indicator():
             row = histogram_data.iloc[i]
             histogram_data.at[i, 'index'] = i
             if i == len(histogram_data) - 1:
-                histogram_data.at[i, 'label'] = '> ' + str(row['value'])
+                histogram_data.at[i, 'x'] = '> ' + str(row['value'])
             else:
-                histogram_data.at[i, 'label'] = str(row['value']) + ' - ' + str(row['value'] + 15)
+                histogram_data.at[i, 'x'] = str(row['value']) + ' - ' + str(row['value'] + 15)
         
-        histogram_data = histogram_data[['label','count','index']]
+        histogram_data = histogram_data[['x','y','index']]
         histogram_data['index'] = histogram_data['index'].astype(int)
         histogram_data = histogram_data.to_dict(orient='records')
 
@@ -648,7 +650,7 @@ class Indicator():
         histogram['unit'] = 'minutos'
         histogram['unit_short'] = 'min'
         
-        self.secondary_data['histogram'] = histogram
+        self.secondary_data(histogram)
         pass
 
     def adjust_backend_format(self):
@@ -707,9 +709,7 @@ class Indicator():
         }
 
         if len(self.secondary_data.keys()) > 0:
-            result_json['resume'] = []
-        for key in self.secondary_data.keys():
-            result_json['resume'].append(self.secondary_data[key])
+            result_json['resume'] = self.secondary_data
 
         if self.bounds and self.bounds_border:
             result_json['bounds_border'] = self.bounds_border.wkb.hex()
