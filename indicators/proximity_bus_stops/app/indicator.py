@@ -626,8 +626,17 @@ class Indicator():
         histogram_data = pd.DataFrame({'count': histogram_data.value_counts()})
         histogram_data.reset_index(inplace=True)
         histogram_data.sort_values(by='value', inplace=True)
-        histogram_data['label'] = histogram_data.apply(lambda row: str(row['value']) + '-' + str(row['value'] + 15), axis=1)
-        histogram_data = histogram_data[['label','count']]
+        
+        for i in range(len(histogram_data)):
+            row = histogram_data.iloc[i]
+            histogram_data.at[i, 'index'] = i
+            if i == len(histogram_data) - 1:
+                histogram_data.at[i, 'label'] = '> ' + str(row['value'])
+            else:
+                histogram_data.at[i, 'label'] = str(row['value']) + ' - ' + str(row['value'] + 15)
+        
+        histogram_data = histogram_data[['label','count','index']]
+        histogram_data['index'] = histogram_data['index'].astype(int)
         histogram_data = histogram_data.to_dict(orient='records')
 
         histogram = {}
