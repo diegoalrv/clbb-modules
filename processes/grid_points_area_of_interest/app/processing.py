@@ -20,13 +20,12 @@ class Processing:
         self.resolution = int(os.getenv('resolution', 10))
         self.x_spacing = int(os.getenv('x_spacing', 50))
         self.y_spacing = int(os.getenv('y_spacing', 50))
-        self.geo_output = os.getenv('geo_output', 'False') == 'True'
         pass
 
     def load_data(self):
         print('load_data')
 
-        output_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}{"_geo" if self.geo_output else ""}.json'
+        output_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}.json'
 
         if os.path.exists(output_path):
             print(f"El archivo {output_path} ya existe.")
@@ -70,7 +69,7 @@ class Processing:
         return gdf
     
     def load_h3_cells(self):
-        input_path = f'/usr/src/app/shared/zone_{self.zone}/h3_cells/resolution_{self.resolution}{"_geo" if self.geo_input else ""}.json'
+        input_path = f'/usr/src/app/shared/zone_{self.zone}/h3_cells/resolution_{self.resolution}.json'
         print(f'opening path {input_path}')
 
         if os.path.exists(input_path):
@@ -125,12 +124,10 @@ class Processing:
         # this code will generate that warning but is totally normal, the column
         # is for geometry data, but here we make it str in order to serialize it
         # also in case of uploading to database, postgres receives the geometry's wkt as string and automatically converts to wkb
-        if not self.geo_output:
-            self.grid_points['wkb']= self.grid_points['geometry'].apply(lambda g: g.wkb.hex())
-            del self.grid_points['geometry']
-            self.grid_points = self.grid_points[['id', 'wkb']]
-        else:
-            self.grid_points = self.grid_points[['id', 'geometry']]
+        self.grid_points['wkb']= self.grid_points['geometry'].apply(lambda g: g.wkb.hex())
+        del self.grid_points['geometry']
+        self.grid_points = self.grid_points[['id', 'wkb']]
+
         pass
 
     ############################################################
@@ -146,14 +143,10 @@ class Processing:
     def export_data(self):
         print('export_data')
 
-        output_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}{"_geo" if self.geo_output else ""}.json'
+        output_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}.json'
 
-        if self.geo_output:
-            df_json_str = self.grid_points.to_json(indent=4)
-            # df_json = json.loads(df_json_str) for posting with arg json=df_geojson
-        else:
-            df_json = list(self.grid_points.T.to_dict().values())
-            df_json_str = json.dumps(df_json, indent=4)
+        df_json = list(self.grid_points.T.to_dict().values())
+        df_json_str = json.dumps(df_json, indent=4)
             
         output_dir = os.path.dirname(output_path)
         if not os.path.exists(output_dir):
