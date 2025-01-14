@@ -11,7 +11,7 @@ class Processing:
     # Init
     def __init__(self):
         self.load_env_variables()
-        self.cols = ['code', 'name', 'dist_type', 'level', 'geometry']
+        self.cols = ['code', 'name', 'dist_type', 'level', 'area_hex', 'geometry']
         pass
     
     ############################################################
@@ -61,10 +61,14 @@ class Processing:
             'id': json_data['id'],
             'geometry': wkb.loads(bytes.fromhex(json_data['wkb'])),
         }
-        
+
         gdf = gpd.GeoDataFrame.from_records([data])
         gdf.set_geometry('geometry', inplace=True)
         gdf.set_crs(4326, inplace=True)
+
+        # gdf.to_crs(32718, inplace=True)
+        # gdf['geometry'] = gdf['geometry'].apply(lambda g: g.buffer(40))
+        # gdf.to_crs(4326, inplace=True)
 
         self.area = gdf
         pass
@@ -85,6 +89,12 @@ class Processing:
 
         all_cells['geometry'] = all_cells['code'].apply(h3_to_polygon)
         all_cells = gpd.GeoDataFrame(all_cells, geometry='geometry')
+
+        all_cells.set_crs(4326, inplace=True)
+        all_cells.to_crs(32718, inplace=True)
+        all_cells['area_hex'] = all_cells.area
+        all_cells.to_crs(4326, inplace=True)
+
         self.all_polys = all_cells
         pass
 
@@ -131,6 +141,10 @@ class Processing:
 
         with open(output_path, "w") as file:
             file.write(df_json_str)
+
+        print(len(self.all_polys))
+        print(self.all_polys.columns)
+        print(self.all_polys.head())
 
         # url = f'{self.server_address}/api/discretedistribution/add/'
         # headers = {'Content-Type': 'application/json'}

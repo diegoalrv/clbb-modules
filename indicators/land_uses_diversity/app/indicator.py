@@ -16,7 +16,7 @@ class Indicator():
         self.init_time = time.time()
         self.data = None
         self.indicator = pd.DataFrame()
-        self.secondary_data = {}
+        self.secondary_data = []
         self.indicator_type = 'numeric'
         self.keywords = []
 
@@ -46,7 +46,8 @@ class Indicator():
         self.geo_input = os.getenv('geo_input', 'False') == 'True'
         self.geo_output = os.getenv('geo_output', 'False') == 'True'
         self.local = os.getenv('local', 'False') == 'True'
-        self.cache = os.getenv('cache', 'False') == 'True'
+        # self.cache = os.getenv('cache', 'False') == 'True'
+        self.cache = True
         self.geometry = os.getenv('geometry', 'False') == 'True'
         self.base = os.getenv('base', 'False') == 'True'
 
@@ -66,16 +67,16 @@ class Indicator():
         else:
             self.bounds = None
 
-        output_path = f'/usr/src/app/shared/busstop_proximity.parquet'
-        output_dir = os.path.dirname(output_path)
-        print(output_dir)
-        if os.path.exists(output_dir):
-            for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
-                print(f'Current directory: {dirpath}')
-                for filename in filenames:
-                    print(f'    File: {filename}')
-                for dirname in dirnames:
-                    print(f'  Directory: {dirname}')
+        # output_path = f'/usr/src/app/shared/busstop_proximity.parquet'
+        # output_dir = os.path.dirname(output_path)
+        # print(output_dir)
+        # if os.path.exists(output_dir):
+        #     for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
+        #         print(f'Current directory: {dirpath}')
+        #         for filename in filenames:
+        #             print(f'    File: {filename}')
+        #         for dirname in dirnames:
+        #             print(f'  Directory: {dirname}')
     
     def load_data(self):
         print('loading data')
@@ -84,7 +85,7 @@ class Indicator():
         self.projects = scenario['projects']
         self.counting_projects = []
 
-        if not self.base and False:
+        if not self.base:
             self.base_indicator = self.load_base_indicator()
 
             if not self.base_indicator.empty and len(self.projects) == 0:
@@ -117,7 +118,7 @@ class Indicator():
         return data
 
     def load_base_indicator(self):
-        input_path = f'/usr/src/app/shared/zone_{self.zone}/bus_stops_proximity/base{"_geo" if self.geo_output else ""}.json'
+        input_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/base{"_geo" if self.geo_output else ""}.json'
 
         if not os.path.exists(input_path):
             print(f"El archivo {input_path} no existe.")
@@ -132,7 +133,6 @@ class Indicator():
             base_indicator = gpd.GeoDataFrame.from_features(base_indicator_json['features'])
         else:
             base_indicator = pd.DataFrame.from_records(base_indicator_json['indicator'])
-            print(base_indicator.columns)
             base_indicator['geometry'] = base_indicator['wkb'].apply(lambda g: wkb.loads(g))
             del base_indicator['wkb']
             base_indicator = gpd.GeoDataFrame(base_indicator, geometry='geometry')
@@ -165,7 +165,7 @@ class Indicator():
 
         if not self.base:
             for current_project in self.projects:
-                endpoint = f'{self.server_address}/api/landuse/?project={current_project}&fields=id,name,bus_stop_type,scenario,project,data_source,updating,change_type,source_type,wkb'
+                endpoint = f'{self.server_address}/api/landuse/?project={current_project}&fields=id,use,scenario,project,data_source,updating,change_type,source_type,wkb'
                 response = requests.get(endpoint)
                 data = response.json()
                 delta_df = pd.DataFrame.from_records(data)
@@ -223,7 +223,7 @@ class Indicator():
         
         input_path = f'/usr/src/app/shared/zone_{self.zone}/h3_cells/resolution_{self.resolution}{"_geo" if self.geo_input else ""}.json'
         print(f'opening path {input_path}')
-        if os.path.exists(input_path) and False:
+        if os.path.exists(input_path):
             with open(input_path, "r") as file:
                 h3_cells_str = file.read()
 
@@ -319,29 +319,14 @@ class Indicator():
         ########################################################
 
         gdf_overlay['area_interseccion'] = gdf_overlay.to_crs(32718).area
-        print(gdf_overlay.columns)
+
+        # for computing from here secondary data
+        self.gdf_overlay = gdf_overlay
+
         ########################################################
 
         gdf_group_by_use_per_hex = gdf_overlay.groupby([hex_col, 'use']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_by_use'})
         gdf_group_by_hex = gdf_overlay.groupby([hex_col]).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_used_by_hex'})
-#
-        ########################################################
-
-        gdf_group_by_use = gdf_overlay.groupby(['use']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_by_use'})
-        gdf_group_by_use
-
-        total_area = gdf_group_by_use['area_by_use'].sum()
-
-        # Add the percentage to the original DataFrame (if needed)
-        gdf_group_by_use['total_percentage'] = 100.0 * gdf_group_by_use['area_by_use'] / total_area
-        del gdf_group_by_use['area_by_use']
-        gdf_group_by_use.sort_values(by='total_percentage', inplace=True, ascending=False)
-        gdf_group_by_use.reset_index(inplace=True, drop=True)
-        gdf_group_by_use.set_index('use', inplace=True)
-        self.secondary_data['total_percentage'] = gdf_group_by_use['total_percentage'].to_dict()
-
-        ########################################################
-
         gdf_group = pd.merge(gdf_group_by_hex, gdf_group_by_use_per_hex, on=hex_col, how='left')
 
         ########################################################
@@ -355,45 +340,60 @@ class Indicator():
 
         ########################################################
 
-        print('a 1')
         gdf_group = gdf_group[[hex_col, 'info_by_use']].groupby(hex_col).agg({'info_by_use':'sum'}).reset_index().rename(columns={'info_by_use': 'diversity'})
-        print('b 1')
 
         ########################################################
 
         gdf_diversity = pd.merge(gdf_group, h3_cells, on=hex_col)
-        gdf_diversity.drop(columns=['area_hex'], inplace=True)
         gdf_diversity = gpd.GeoDataFrame(gdf_diversity, geometry='geometry')
 
         ########################################################
 
-        # current_codes = list(gdf_diversity['code'])
-        # missing_hexs = h3_cells[h3_cells['code'].apply(lambda code: code not in current_codes)]
-        # missing_hexs['diversity'] = 0
+        current_codes = list(gdf_diversity['code'])
+        missing_hexs = h3_cells[h3_cells['code'].apply(lambda code: code not in current_codes)]
+        missing_hexs['diversity'] = 0
+
+        gdf_diversity = gpd.GeoDataFrame(pd.concat([gdf_diversity, missing_hexs]), geometry='geometry')
         # missing_hexs = h3_cells.loc[~h3_cells[hex_col].isin(gdf_diversity[hex_col]), [hex_col, 'geometry']]
 
         ########################################################
 
-        # gdf_diversity = pd.concat([gdf_diversity, missing_hexs])
-        # gdf_diversity = gpd.GeoDataFrame(gdf_diversity, geometry='geometry')
+        gdf_diversity.drop(columns=['area_hex'], inplace=True)
+
+        ########################################################
 
         gdf_diversity['name'] = f'h3-{self.resolution}'
         gdf_diversity['dist_type'] = 'h3'
         gdf_diversity['level'] = 10
 
         self.indicator = gdf_diversity
-        print('a 3')
-        print(self.indicator['diversity'].max())
-        print('b 3')
-
-        ########################################################        
         pass
+    
+    def compute_secondary(self):
+        gdf_group_by_use = self.gdf_overlay.groupby(['use']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_by_use'})
+        total_area = gdf_group_by_use['area_by_use'].sum()
+
+        gdf_group_by_use['percentage'] = 100.0 * gdf_group_by_use['area_by_use'] / total_area
+        gdf_group_by_use['percentage'] = round(gdf_group_by_use['percentage'], 4)
+        del gdf_group_by_use['area_by_use']
+        gdf_group_by_use.sort_values(by='percentage', inplace=True, ascending=False)
+        gdf_group_by_use.set_index('use', inplace=True)
+        total_percentage_data = gdf_group_by_use['percentage'].to_dict()
+
+        total_percentage = {}
+        total_percentage['index'] = 0
+        total_percentage['type'] = 'pie_chart'
+        total_percentage['data'] = total_percentage_data
+        total_percentage['positive'] = False
+        total_percentage['name'] = 'Usos de suelo'
+        total_percentage['unit'] = '%'
+        total_percentage['unit_short'] = '%'
+
+        self.secondary_data.append(total_percentage)
 
     def adjust_backend_format(self):
         gdf = self.indicator
-        print('a 2')
         gdf['value'] = gdf['diversity']
-        print('b 2')
 
         def get_color(value, vmin, vmax):
             cmap = plt.cm.RdYlGn
@@ -403,9 +403,7 @@ class Indicator():
 
         gdf['color'] = gdf['value'].apply(lambda v: get_color(v, 0, 2))
 
-        print('a 4')
         gdf = gdf[['code', 'value', 'color', 'diversity']]
-        print('b 4')
         # gdf.rename({'code': 'hex'}, inplace=True)
 
         if self.geometry:
@@ -432,42 +430,28 @@ class Indicator():
         if self.base:
             output_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/base{"_geo" if self.geo_output else ""}.json'
         else:
-            output_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/result{self.result}{"_geo" if self.geo_output else ""}.json'
+            output_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/base{self.result}{"_geo" if self.geo_output else ""}.json'
 
         if self.geo_output:
             df_json_str = self.indicator.to_json(indent=4)
-            df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
         else:
-            df_json = list(self.indicator.T.to_dict().values())
-            # df_json_str = json.dumps(df_json, indent=4)
+            df_json_str = self.indicator.to_json(orient='records')
+
+        df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
 
         result_json = {
-            'indicator': df_json,
-            'resume': {}
+            'indicator': df_json
         }
 
-        for key in self.secondary_data.keys():
-            result_json['resume'][key] = self.secondary_data[key]
-
-        # if not self.upgrade.empty:
-        #     resume_json = self.upgrade.copy()
-        #     resume_json['percentage'] = round(resume_json['percentage'], 2)
-        #     resume_json['project'] = resume_json['project'].astype(int)
-        #     resume_json.set_index('project', inplace=True)
-        #     resume_json['percentage'].to_dict()
-
-        #     temp = self.upgrade.copy()
-        #     df_list = pd.DataFrame({'project': self.counting_projects})
-        #     resume = pd.merge(df_list, temp, on='project', how='left')
-        #     resume['percentage'] = round(resume['percentage'].fillna(0), 2)
-        #     resume['project'] = resume['project'].astype(int)
-        #     resume.set_index('project', inplace=True)
-        #     resume_json = resume['percentage'].to_dict()
-
-        #     result_json['resume'] = resume_json
+        if len(self.secondary_data) > 0:
+            result_json['resume'] = self.secondary_data
         
         if self.bounds and self.bounds_border:
             result_json['bounds_border'] = self.bounds_border.wkb.hex()
+
+        end = time.time()
+        print('time:', end - self.init_time)
+        result_json['time'] = end - self.init_time
 
         if not self.base and not self.local:
             try:
@@ -499,7 +483,8 @@ class Indicator():
             try:
                 if self.indicator.empty:
                     self.execute_process()
-                # self.compute_secondary()
+
+                self.compute_secondary()
             except Exception as e:
                 print('exception in execute_process:',e)
                 raise e

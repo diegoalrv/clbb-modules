@@ -1,4 +1,5 @@
 import geopandas as gpd
+import pandas as pd
 import os
 import requests
 import json
@@ -16,6 +17,7 @@ class Processing:
     def load_env_variables(self):
         self.server_address = os.getenv('server_address', 'http://localhost:8000')
         self.zone = int(os.getenv('zone', 1))
+        self.resolution = int(os.getenv('resolution', 10))
         self.x_spacing = int(os.getenv('x_spacing', 50))
         self.y_spacing = int(os.getenv('y_spacing', 50))
         self.geo_output = os.getenv('geo_output', 'False') == 'True'
@@ -47,7 +49,8 @@ class Processing:
                 for dirname in dirnames:
                     print(f'Directory: {dirname}')
 
-        self.load_area_of_interest()
+        self.area = self.load_area_of_interest()
+        self.h3_cells = self.load_h3_cells()
         pass
 
     def load_area_of_interest(self, id=1):
@@ -64,8 +67,26 @@ class Processing:
         gdf.set_geometry('geometry', inplace=True)
         gdf.set_crs(4326, inplace=True)
 
-        self.area = gdf
-        pass
+        return gdf
+    
+    def load_h3_cells(self):
+        input_path = f'/usr/src/app/shared/zone_{self.zone}/h3_cells/resolution_{self.resolution}{"_geo" if self.geo_input else ""}.json'
+        print(f'opening path {input_path}')
+
+        if os.path.exists(input_path):
+            with open(input_path, "r") as file:
+                h3_cells_str = file.read()
+
+            h3_cells_json = json.loads(h3_cells_str)
+            h3_cells = pd.DataFrame.from_records(h3_cells_json)
+            h3_cells['geometry'] = h3_cells['wkb'].apply(lambda g: wkb.loads(bytes.fromhex(g)))
+            h3_cells = gpd.GeoDataFrame(h3_cells, geometry='geometry')
+            h3_cells = h3_cells.set_crs(4326)
+
+            print('cached h3_cells:', len(h3_cells))
+            return h3_cells
+        
+        return None
 
     ############################################################
     # Methods

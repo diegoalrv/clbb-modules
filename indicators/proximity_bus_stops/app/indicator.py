@@ -41,13 +41,14 @@ class Indicator():
         if self.zone == -1:
             raise Exception({'error': 'zone not provided'})
 
-        self.resolution = int(os.getenv('resolution', 1))
+        self.resolution = int(os.getenv('resolution', 10))
         self.x_spacing = int(os.getenv('x_spacing', 50))
         self.y_spacing = int(os.getenv('y_spacing', 50))
         self.geo_input = os.getenv('geo_input', 'False') == 'True'
         self.geo_output = os.getenv('geo_output', 'False') == 'True'
         self.local = os.getenv('local', 'False') == 'True'
-        self.cache = os.getenv('cache', 'False') == 'True'
+        # self.cache = os.getenv('cache', 'False') == 'True'
+        self.cache = True
         self.geometry = os.getenv('geometry', 'False') == 'True'
         self.base = os.getenv('base', 'False') == 'True'
 
@@ -67,16 +68,16 @@ class Indicator():
         else:
             self.bounds = None
 
-        output_path = f'/usr/src/app/shared/busstop_proximity.parquet'
-        output_dir = os.path.dirname(output_path)
-        print(output_dir)
-        if os.path.exists(output_dir):
-            for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
-                print(f'Current directory: {dirpath}')
-                for filename in filenames:
-                    print(f'    File: {filename}')
-                for dirname in dirnames:
-                    print(f'  Directory: {dirname}')
+        # output_path = f'/usr/src/app/shared/busstop_proximity.parquet'
+        # output_dir = os.path.dirname(output_path)
+        # print(output_dir)
+        # if os.path.exists(output_dir):
+        #     for dirpath, dirnames, filenames in os.walk('/usr/src/app/shared'):
+        #         print(f'Current directory: {dirpath}')
+        #         for filename in filenames:
+        #             print(f'    File: {filename}')
+        #         for dirname in dirnames:
+        #             print(f'  Directory: {dirname}')
 
     def load_data(self):
         print('loading data')
@@ -120,6 +121,9 @@ class Indicator():
 
         self.area = self.load_area_of_interest()
         print('area:', len(self.area))
+
+        self.h3_cells = self.load_h3_cells()
+        print('h3_cells:', len(self.h3_cells))
 
         self.grid_points = self.load_grid_points()
         # self.grid_points = self.get_grid_points_from_area(self.bus_stops, self.x_spacing, self.y_spacing)
@@ -423,6 +427,23 @@ class Indicator():
         area_of_interest = area_of_interest.set_crs(4326)
         return area_of_interest
     
+    def load_h3_cells(self):
+        input_path = f'/usr/src/app/shared/zone_{self.zone}/h3_cells/resolution_{self.resolution}{"_geo" if self.geo_input else ""}.json'
+        print(f'opening path {input_path}')
+
+        if os.path.exists(input_path):
+            with open(input_path, "r") as file:
+                h3_cells_str = file.read()
+
+            h3_cells_json = json.loads(h3_cells_str)
+            h3_cells = pd.DataFrame.from_records(h3_cells_json)
+            h3_cells['geometry'] = h3_cells['wkb'].apply(lambda g: wkb.loads(bytes.fromhex(g)))
+            h3_cells = gpd.GeoDataFrame(h3_cells, geometry='geometry')
+            h3_cells = h3_cells.set_crs(4326)
+            return h3_cells
+    
+        return None
+    
     def load_grid_points(self):
         grid_points = None
         
@@ -489,6 +510,10 @@ class Indicator():
         #####################################################
 
         grid_points = self.grid_points
+        h3_cells = self.h3_cells
+
+        grid_points = gpd.overlay(grid_points, h3_cells, how='intersection')
+        grid_points = grid_points[['code', 'wkb_1', 'geometry']]
         grid_points['id'] = self.net.get_node_ids(grid_points['geometry'].x, grid_points['geometry'].y)
 
         #####################################################
@@ -511,13 +536,13 @@ class Indicator():
 
         #####################################################
 
-        APERTURE_SIZE = self.resolution
+        # APERTURE_SIZE = self.resolution
         hex_col = f'code'
 
         distance = accessibility.copy()
 
         # here, the DataFrame creates a column with the cell code of resolution APERTURE_SIZE that contains each row point
-        distance[hex_col] = distance.apply(lambda p: h3.latlng_to_cell(p.geometry.y,p.geometry.x,APERTURE_SIZE),1)
+        # distance[hex_col] = distance.apply(lambda p: h3.latlng_to_cell(p.geometry.y,p.geometry.x,APERTURE_SIZE),1)
         
         bus_stops_project = self.bus_stops[['project']]
         bus_stops_project.reset_index(inplace=True)
@@ -562,7 +587,7 @@ class Indicator():
         self.indicator = distance_m
         pass
 
-    def compute_secondary(self):        
+    def compute_secondary(self):
         # Project change
         
         left = self.base_indicator.copy()[['code', 'mins', 'distance', 'geometry']]
@@ -713,6 +738,10 @@ class Indicator():
 
         if self.bounds and self.bounds_border:
             result_json['bounds_border'] = self.bounds_border.wkb.hex()
+
+        end = time.time()
+        print('time:', end - self.init_time)
+        result_json['time'] = end - self.init_time
 
         if not self.base and not self.local:
             try:
