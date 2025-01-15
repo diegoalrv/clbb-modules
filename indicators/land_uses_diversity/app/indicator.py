@@ -16,6 +16,7 @@ class Indicator():
         self.init_time = time.time()
         self.data = None
         self.indicator = pd.DataFrame()
+        self.gdf_overlay = pd.DataFrame()
         self.secondary_data = []
         self.indicator_type = 'numeric'
         self.keywords = []
@@ -86,7 +87,9 @@ class Indicator():
         self.counting_projects = []
 
         if not self.base:
-            self.base_indicator = self.load_base_indicator()
+            indicator, resume = self.load_base_indicator()
+            self.base_indicator = indicator
+            self.secondary_data = resume
 
             if not self.base_indicator.empty and len(self.projects) == 0:
                 self.indicator = self.base_indicator
@@ -137,7 +140,12 @@ class Indicator():
             del base_indicator['wkb']
             base_indicator = gpd.GeoDataFrame(base_indicator, geometry='geometry')
         
-        return base_indicator
+        if 'resume' in base_indicator_json.keys():
+            resume = base_indicator_json['resume']
+        else:
+            resume = {}
+
+        return base_indicator, resume
 
     def load_land_uses(self):
         if self.cache:
@@ -165,7 +173,33 @@ class Indicator():
 
         if not self.base:
             for current_project in self.projects:
-                endpoint = f'{self.server_address}/api/landuse/?project={current_project}&fields=id,use,scenario,project,data_source,updating,change_type,source_type,wkb'
+                endpoint = f'{self.server_address}/api/landuse/?scenario=None&project={current_project}&fields=id,use,scenario,project,data_source,updating,change_type,source_type,wkb'
+                response = requests.get(endpoint)
+                data = response.json()
+                delta_df = pd.DataFrame.from_records(data)
+
+                if len(delta_df):
+                    self.counting_projects.append(current_project)
+
+                    delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+                    del delta_df['wkb']
+                    delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
+                    delta_gdf.set_crs(4326, inplace=True)
+
+                    modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+                    ids_to_modify = list(modify_gdf['updating'])
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+                    data_gdf = pd.concat([data_gdf, modify_gdf])
+
+                    delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+                    ids_to_delete = list(delete_gdf['updating']) 
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+
+                    create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+                    data_gdf = pd.concat([data_gdf, create_gdf])
+                    
+            for current_project in self.projects:
+                endpoint = f'{self.server_address}/api/landuse/?scenario={self.scenario}&project={current_project}&fields=id,use,scenario,project,data_source,updating,change_type,source_type,wkb'
                 response = requests.get(endpoint)
                 data = response.json()
                 delta_df = pd.DataFrame.from_records(data)
@@ -369,7 +403,7 @@ class Indicator():
         self.indicator = gdf_diversity
         pass
     
-    def compute_secondary(self):
+    def compute_percentage(self):
         gdf_group_by_use = self.gdf_overlay.groupby(['use']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_by_use'})
         total_area = gdf_group_by_use['area_by_use'].sum()
 
@@ -377,8 +411,8 @@ class Indicator():
         gdf_group_by_use['percentage'] = round(gdf_group_by_use['percentage'], 4)
         del gdf_group_by_use['area_by_use']
         gdf_group_by_use.sort_values(by='percentage', inplace=True, ascending=False)
-        gdf_group_by_use.set_index('use', inplace=True)
-        total_percentage_data = gdf_group_by_use['percentage'].to_dict()
+        gdf_group_by_use.rename(columns={'use': 'label', 'percentage': 'value'}, inplace=True)
+        total_percentage_data = gdf_group_by_use.to_dict(orient='records')
 
         total_percentage = {}
         total_percentage['index'] = 0
@@ -390,6 +424,9 @@ class Indicator():
         total_percentage['unit_short'] = '%'
 
         self.secondary_data.append(total_percentage)
+        
+    def compute_differences(self):
+        pass
 
     def adjust_backend_format(self):
         gdf = self.indicator
@@ -483,8 +520,10 @@ class Indicator():
             try:
                 if self.indicator.empty:
                     self.execute_process()
+                    self.compute_percentage()
 
-                self.compute_secondary()
+                if not self.base and not self.base_indicator.empty:
+                    self.compute_differences()
             except Exception as e:
                 print('exception in execute_process:',e)
                 raise e

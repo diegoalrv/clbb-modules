@@ -222,7 +222,33 @@ class Indicator():
 
         if not self.base:
             for current_project in self.projects:
-                endpoint = f'{self.server_address}/api/busstop/?project={current_project}&fields=id,name,bus_stop_type,scenario,project,data_source,updating,change_type,source_type,wkb'
+                endpoint = f'{self.server_address}/api/busstop/?scenario=None&project={current_project}&fields=id,name,bus_stop_type,scenario,project,data_source,updating,change_type,source_type,wkb'
+                response = requests.get(endpoint)
+                data = response.json()
+                delta_df = pd.DataFrame.from_records(data)
+
+                if len(delta_df):
+                    self.counting_projects.append(current_project)
+
+                    delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+                    del delta_df['wkb']
+                    delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
+                    delta_gdf.set_crs(4326, inplace=True)
+
+                    modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+                    ids_to_modify = list(modify_gdf['updating'])
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+                    data_gdf = pd.concat([data_gdf, modify_gdf])
+
+                    delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+                    ids_to_delete = list(delete_gdf['updating']) 
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+
+                    create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+                    data_gdf = pd.concat([data_gdf, create_gdf])
+                    
+            for current_project in self.projects:
+                endpoint = f'{self.server_address}/api/busstop/?scenario={self.scenario}&project={current_project}&fields=id,name,bus_stop_type,scenario,project,data_source,updating,change_type,source_type,wkb'
                 response = requests.get(endpoint)
                 data = response.json()
                 delta_df = pd.DataFrame.from_records(data)
@@ -275,7 +301,31 @@ class Indicator():
 
         if not self.base:
             for current_project in self.projects:
-                endpoint = f'{self.server_address}/api/street/?project={current_project}&fields=length,src,dst,scenario,project,data_source,updating,change_type,source_type'
+                endpoint = f'{self.server_address}/api/street/?scenario=None&project={current_project}&fields=length,src,dst,scenario,project,data_source,updating,change_type,source_type'
+                response = requests.get(endpoint)
+                data = response.json()
+                delta_df = pd.DataFrame.from_records(data)
+
+                if len(delta_df):
+                    delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+                    del delta_df['wkb']
+                    delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
+                    delta_gdf.set_crs(4326, inplace=True)
+
+                    modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+                    ids_to_modify = list(modify_gdf['updating'])
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+                    data_gdf = pd.concat([data_gdf, modify_gdf])
+
+                    delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+                    ids_to_delete = list(delete_gdf['updating']) 
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+
+                    create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+                    data_gdf = pd.concat([data_gdf, create_gdf])
+                    
+            for current_project in self.projects:
+                endpoint = f'{self.server_address}/api/street/?scenario={self.scenario}&project={current_project}&fields=length,src,dst,scenario,project,data_source,updating,change_type,source_type'
                 response = requests.get(endpoint)
                 data = response.json()
                 delta_df = pd.DataFrame.from_records(data)
@@ -326,7 +376,31 @@ class Indicator():
 
         if not self.base:
             for current_project in self.projects:
-                endpoint = f'{self.server_address}/api/node/?project={current_project}&fields=id,name,bus_stop_type,scenario,project,data_source,updating,change_type,source_type,wkb'
+                endpoint = f'{self.server_address}/api/node/?scenario=None&project={current_project}&fields=id,name,bus_stop_type,scenario,project,data_source,updating,change_type,source_type,wkb'
+                response = requests.get(endpoint)
+                data = response.json()
+                delta_df = pd.DataFrame.from_records(data)
+
+                if len(delta_df):
+                    delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+                    del delta_df['wkb']
+                    delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
+                    delta_gdf.set_crs(4326, inplace=True)
+
+                    modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+                    ids_to_modify = list(modify_gdf['updating'])
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+                    data_gdf = pd.concat([data_gdf, modify_gdf])
+
+                    delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+                    ids_to_delete = list(delete_gdf['updating']) 
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+
+                    create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+                    data_gdf = pd.concat([data_gdf, create_gdf])
+                    
+            for current_project in self.projects:
+                endpoint = f'{self.server_address}/api/node/?scenario={self.scenario}&project={current_project}&fields=id,name,bus_stop_type,scenario,project,data_source,updating,change_type,source_type,wkb'
                 response = requests.get(endpoint)
                 data = response.json()
                 delta_df = pd.DataFrame.from_records(data)
@@ -548,10 +622,23 @@ class Indicator():
         bus_stops_project.reset_index(inplace=True)
         bus_stops_project.rename(columns={'id': 'bus_stop_id'}, inplace=True)
 
-        distance['bus_stop_id'] = distance['bus_stop_id'].astype(int)
-        distance = distance.merge(bus_stops_project, how='left', on='bus_stop_id')
+        print(distance['bus_stop_id'].value_counts(dropna=False))
+
+        notna_distance = distance[distance['bus_stop_id'].notna()]
+        notna_distance['bus_stop_id'] = notna_distance['bus_stop_id'].astype(int)
+        notna_distance = notna_distance.merge(bus_stops_project, how='left', on='bus_stop_id')
+        notna_distance = notna_distance[['bus_stop_id', 'project']]
+        print('notna_distance columns before', notna_distance.columns)
+        notna_distance.reset_index(inplace=True)
+        print('notna_distance columns after', notna_distance.columns)
+
+        print('distance columns before', distance.columns)
+        distance.reset_index(inplace=True)
+        print('distance columns after', distance.columns)
+
+        distance = distance.merge(notna_distance, how='left', on='index')
         distance['project'] = distance['project'].fillna(np.nan)
-       
+
         distance_m = distance[[hex_col, 'distance', 'project']]
         distance_m = distance_m.sort_values(by=[hex_col, 'distance'])
         distance_by_hex = distance_m.groupby(hex_col)
@@ -587,7 +674,7 @@ class Indicator():
         self.indicator = distance_m
         pass
 
-    def compute_secondary(self):
+    def compute_differences(self):
         # Project change
         
         left = self.base_indicator.copy()[['code', 'mins', 'distance', 'geometry']]
@@ -775,7 +862,7 @@ class Indicator():
                     self.execute_process()
 
                 if not self.base and not self.base_indicator.empty:
-                    self.compute_secondary()
+                    self.compute_differences()
             except Exception as e:
                 print('exception in execute_process:',e)
                 raise e
