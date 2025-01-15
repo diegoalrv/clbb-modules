@@ -718,8 +718,7 @@ class Indicator():
         result = pd.merge(df_list, temp, on='project', how='left')
         result['percentage'] = round(result['percentage'].fillna(0), 2)
         result = result[['project', 'percentage']]
-        result['x'] = result['project'].apply(lambda project: self.projects_name[project])
-        # result['x'] = self.projects_name[result['project']]
+        result['label'] = result['project'].apply(lambda project: self.projects_name[project])
         improvement_percentage_data = result.to_dict(orient='records')
 
         improvement_percentage = {}
@@ -737,7 +736,7 @@ class Indicator():
 
         histogram_data = pd.DataFrame({'value': self.indicator['mins']})
         histogram_data['value'] = histogram_data['value'].apply(lambda v: min(v, 60) // 15 * 15).astype(int)
-        histogram_data = pd.DataFrame({'y': histogram_data.value_counts()})
+        histogram_data = pd.DataFrame({'value': histogram_data.value_counts()})
         histogram_data.reset_index(inplace=True)
         histogram_data.sort_values(by='value', inplace=True)
         
@@ -745,11 +744,11 @@ class Indicator():
             row = histogram_data.iloc[i]
             histogram_data.at[i, 'index'] = i
             if i == len(histogram_data) - 1:
-                histogram_data.at[i, 'x'] = '> ' + str(row['value'])
+                histogram_data.at[i, 'label'] = '> ' + str(row['value'])
             else:
-                histogram_data.at[i, 'x'] = str(row['value']) + ' - ' + str(row['value'] + 15)
+                histogram_data.at[i, 'label'] = str(row['value']) + ' - ' + str(row['value'] + 15)
         
-        histogram_data = histogram_data[['x','y','index']]
+        histogram_data = histogram_data[['label','value','index']]
         histogram_data['index'] = histogram_data['index'].astype(int)
         histogram_data = histogram_data.to_dict(orient='records')
 
