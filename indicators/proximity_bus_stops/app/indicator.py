@@ -675,7 +675,7 @@ class Indicator():
         pass
 
     def compute_differences(self):
-        # Project change
+        # Project percentual change
         
         left = self.base_indicator.copy()[['code', 'mins', 'distance', 'geometry']]
         left.rename(columns={'mins': 'base_mins', 'distance': 'base_distance'}, inplace=True)
@@ -692,15 +692,7 @@ class Indicator():
         
         if self.bounds:
             upgrade = upgrade[upgrade['geometry'].apply(lambda g: intersects(self.bounds, g))]
-        
             self.bounds_border = upgrade.copy()['geometry'].union_all(method='coverage')
-            # focus_zone_gdf = gpd.GeoDataFrame.from_records([{
-            #     'geometry': bounds_border
-            # },{
-            #     'geometry': bounds_border.buffer(0.0005, join_style='mitre')
-            # }])
-            # focus_zone_gdf.plot(figsize=(15,20), color='None')
-            # focus_zone_gdf
 
         cells_to_divide_in = len(upgrade)
 
@@ -718,7 +710,8 @@ class Indicator():
         result = pd.merge(df_list, temp, on='project', how='left')
         result['percentage'] = round(result['percentage'].fillna(0), 2)
         result = result[['project', 'percentage']]
-        result['label'] = result['project'].apply(lambda project: self.projects_name[project])
+        result['project_name'] = result['project'].apply(lambda project: self.projects_name[project])
+        result.rename(columns={'project_name': 'label', 'percentage': 'value'}, inplace=True)
         improvement_percentage_data = result.to_dict(orient='records')
 
         improvement_percentage = {}
@@ -726,27 +719,66 @@ class Indicator():
         improvement_percentage['type'] = 'project_change'
         improvement_percentage['data'] = improvement_percentage_data
         improvement_percentage['positive'] = True
-        improvement_percentage['name'] = 'Mejora de proyectos'
+        improvement_percentage['name'] = 'Mejora porcentual'
         improvement_percentage['unit'] = '%'
         improvement_percentage['unit_short'] = '%'
 
         self.secondary_data.append(improvement_percentage)
 
+        # # Project flat change
+        
+        # upgrade = conclusion.copy()
+        
+        # if self.bounds:
+        #     upgrade = upgrade[upgrade['geometry'].apply(lambda g: intersects(self.bounds, g))]
+        #     self.bounds_border = upgrade.copy()['geometry'].union_all(method='coverage')
+
+        # cells_to_divide_in = len(upgrade)
+        # total_base_mins = upgrade['base_mins'].sum()
+
+        # upgrade['change_mins'] = upgrade['new_mins'] - upgrade['base_mins']
+        # upgrade.dropna(subset=['project'], inplace=True)
+        # upgrade = upgrade[['project', 'change_mins']].reset_index(drop=True)
+        # upgrade = upgrade.groupby('project')
+        # upgrade = upgrade.sum()
+        # upgrade = upgrade.reset_index()
+        # upgrade['project'] = upgrade['project'].astype(int)
+        # # upgrade['change_mins'] = upgrade['change_mins'] / total_base_mins
+
+        # temp = upgrade.copy()
+        # df_list = pd.DataFrame({'project': self.counting_projects})
+        # result = pd.merge(df_list, temp, on='project', how='left')
+        # result['change_mins'] = round(result['change_mins'].fillna(0), 2)
+        # result = result[['project', 'change_mins']]
+        # result['label'] = result['project'].apply(lambda project: self.projects_name[project])
+        # improvement_flat_data = result.to_dict(orient='records')
+
+        # improvement_flat = {}
+        # improvement_flat['index'] = 2
+        # improvement_flat['type'] = 'project_change'
+        # improvement_flat['data'] = improvement_flat_data
+        # improvement_flat['positive'] = True
+        # improvement_flat['name'] = 'Mejora absoluta'
+        # improvement_flat['unit'] = 'minutos'
+        # improvement_flat['unit_short'] = 'min'
+
+        # self.secondary_data.append(improvement_flat)
+
         # Histogram
 
-        histogram_data = pd.DataFrame({'value': self.indicator['mins']})
-        histogram_data['value'] = histogram_data['value'].apply(lambda v: min(v, 60) // 15 * 15).astype(int)
+        histogram_data = pd.DataFrame({'mins': self.indicator['mins']})
+        histogram_data['mins'] = histogram_data['mins'].apply(lambda v: min(v, 60) // 15 * 15).astype(int)
         histogram_data = pd.DataFrame({'value': histogram_data.value_counts()})
         histogram_data.reset_index(inplace=True)
-        histogram_data.sort_values(by='value', inplace=True)
+        histogram_data.sort_values(by='mins', inplace=True)
         
         for i in range(len(histogram_data)):
             row = histogram_data.iloc[i]
             histogram_data.at[i, 'index'] = i
             if i == len(histogram_data) - 1:
-                histogram_data.at[i, 'label'] = '> ' + str(row['value'])
+                histogram_data.at[i, 'label'] = '> ' + str(row['mins'])
             else:
-                histogram_data.at[i, 'label'] = str(row['value']) + ' - ' + str(row['value'] + 15)
+                histogram_data.at[i, 'label'] = str(row['mins']) + ' - ' + str(row['mins'] + 15)
         
         histogram_data = histogram_data[['label','value','index']]
         histogram_data['index'] = histogram_data['index'].astype(int)

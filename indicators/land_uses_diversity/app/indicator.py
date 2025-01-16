@@ -89,10 +89,11 @@ class Indicator():
         if not self.base:
             indicator, resume = self.load_base_indicator()
             self.base_indicator = indicator
-            self.secondary_data = resume
+            self.base_secondary_data = resume
 
             if not self.base_indicator.empty and len(self.projects) == 0:
                 self.indicator = self.base_indicator
+                self.secondary_data = self.base_secondary_data
                 return
 
         # I'm commenting this because there's no tracking of changes on the
