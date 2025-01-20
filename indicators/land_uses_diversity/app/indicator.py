@@ -146,6 +146,7 @@ class Indicator():
         else:
             resume = {}
 
+        base_indicator.rename(columns={'value': 'diversity'}, inplace=True)
         return base_indicator, resume
 
     def load_land_uses(self):
@@ -280,12 +281,11 @@ class Indicator():
             grid_points = self.make_grid_points_gdf(self.area, x_spacing, y_spacing)
             grid_points = gpd.overlay(grid_points, self.area[['geometry']], how='intersection')
             
-            hex_col = f'code'
-            grid_points[hex_col] = grid_points.apply(lambda p: h3.latlng_to_cell(p.geometry.y, p.geometry.x, self.resolution), 1)
-            h3_cells = grid_points[[hex_col]].drop_duplicates().reset_index(drop=True)
+            grid_points['code'] = grid_points.apply(lambda p: h3.latlng_to_cell(p.geometry.y, p.geometry.x, self.resolution), 1)
+            h3_cells = grid_points[['code']].drop_duplicates().reset_index(drop=True)
 
             # Crear una nueva columna en el DataFrame con la geometría de cada hexágono
-            h3_cells['geometry'] = h3_cells[hex_col].apply(lambda code: self.h3_to_polygon(code))
+            h3_cells['geometry'] = h3_cells['code'].apply(lambda code: self.h3_to_polygon(code))
 
             # Convertir el DataFrame en un GeoDataFrame
             h3_cells = gpd.GeoDataFrame(h3_cells, geometry='geometry')
@@ -345,7 +345,6 @@ class Indicator():
 
         h3_cells = self.h3_cells
         land_uses = self.land_uses
-        hex_col = f'code'
 
         ########################################################
 
@@ -360,26 +359,38 @@ class Indicator():
 
         ########################################################
 
-        gdf_group_by_use_per_hex = gdf_overlay.groupby([hex_col, 'use']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_by_use'})
-        gdf_group_by_hex = gdf_overlay.groupby([hex_col]).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_used_by_hex'})
-        gdf_group = pd.merge(gdf_group_by_hex, gdf_group_by_use_per_hex, on=hex_col, how='left')
+        gdf_area_by_use_per_hex = gdf_overlay.groupby(['code', 'use']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_by_use'})
+        gdf_area_by_hex = gdf_overlay.groupby(['code']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_used_by_hex'})
+        gdf_area = pd.merge(gdf_area_by_hex, gdf_area_by_use_per_hex, on='code', how='left')
 
         ########################################################
 
-        gdf_group['fraction_by_use'] = gdf_group['area_by_use'] / gdf_group['area_used_by_hex']
+        gdf_area['fraction_by_use'] = gdf_area['area_by_use'] / gdf_area['area_used_by_hex']
+
+        uses = list(set(gdf_area['use']))
+        uses.sort()
+        self.landuse_id = uses_id = {v: uses.index(v) for v in uses}
+
+        percentage_by_hex = gdf_area.groupby('code')
+        percentage_by_hex = percentage_by_hex.apply(lambda group: {uses_id[row['use']]: round(row['fraction_by_use'], 3) for index, row in group.iterrows() if round(row['fraction_by_use'], 3) > 0})
 
         ########################################################
 
-        gdf_group['info_by_use'] = -1*gdf_group['fraction_by_use']*np.log2(gdf_group['fraction_by_use'])
-        gdf_group.loc[gdf_group['fraction_by_use']==1, 'info_by_use'] = 0
+        gdf_area['info_by_use'] = -1*gdf_area['fraction_by_use']*np.log2(gdf_area['fraction_by_use'])
+        gdf_area.loc[gdf_area['fraction_by_use']==1, 'info_by_use'] = 0
 
         ########################################################
 
-        gdf_group = gdf_group[[hex_col, 'info_by_use']].groupby(hex_col).agg({'info_by_use':'sum'}).reset_index().rename(columns={'info_by_use': 'diversity'})
+        gdf_area = gdf_area[['code', 'info_by_use']].groupby('code').agg({'info_by_use':'sum'}).reset_index().rename(columns={'info_by_use': 'diversity'})
 
         ########################################################
 
-        gdf_diversity = pd.merge(gdf_group, h3_cells, on=hex_col)
+        gdf_percentage_by_hex = pd.DataFrame({'percentages': percentage_by_hex})
+        gdf_area = pd.merge(gdf_area, gdf_percentage_by_hex, on='code')
+
+        ########################################################
+
+        gdf_diversity = pd.merge(gdf_area, h3_cells, on='code')
         gdf_diversity = gpd.GeoDataFrame(gdf_diversity, geometry='geometry')
 
         ########################################################
@@ -389,7 +400,7 @@ class Indicator():
         missing_hexs['diversity'] = 0
 
         gdf_diversity = gpd.GeoDataFrame(pd.concat([gdf_diversity, missing_hexs]), geometry='geometry')
-        # missing_hexs = h3_cells.loc[~h3_cells[hex_col].isin(gdf_diversity[hex_col]), [hex_col, 'geometry']]
+        # missing_hexs = h3_cells.loc[~h3_cells['code'].isin(gdf_diversity['code']), ['code', 'geometry']]
 
         ########################################################
 
@@ -405,15 +416,22 @@ class Indicator():
         pass
     
     def compute_percentage(self):
-        gdf_group_by_use = self.gdf_overlay.groupby(['use']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_by_use'})
-        total_area = gdf_group_by_use['area_by_use'].sum()
+        gdf_overlay = self.gdf_overlay
+            
+        # if self.bounds:
+        #     gdf_overlay = gdf_overlay[gdf_overlay['geometry'].apply(lambda g: intersects(self.bounds, g))]
+        #     gdf_overlay = gdf_overlay[~gdf_overlay['geometry'].is_empty]
+        #     self.bounds_border = gdf_overlay.copy()['geometry'].union_all(method='coverage')
 
-        gdf_group_by_use['percentage'] = 100.0 * gdf_group_by_use['area_by_use'] / total_area
-        gdf_group_by_use['percentage'] = round(gdf_group_by_use['percentage'], 4)
-        del gdf_group_by_use['area_by_use']
-        gdf_group_by_use.sort_values(by='percentage', inplace=True, ascending=False)
-        gdf_group_by_use.rename(columns={'use': 'label', 'percentage': 'value'}, inplace=True)
-        total_percentage_data = gdf_group_by_use.to_dict(orient='records')
+        gdf_area_by_use = gdf_overlay.groupby(['use']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_by_use'})
+        total_area = gdf_area_by_use['area_by_use'].sum()
+
+        gdf_area_by_use['percentage'] = 100.0 * gdf_area_by_use['area_by_use'] / total_area
+        gdf_area_by_use['percentage'] = round(gdf_area_by_use['percentage'], 4)
+        del gdf_area_by_use['area_by_use']
+        gdf_area_by_use.sort_values(by='percentage', inplace=True, ascending=False)
+        gdf_area_by_use.rename(columns={'use': 'label', 'percentage': 'value'}, inplace=True)
+        total_percentage_data = gdf_area_by_use.to_dict(orient='records')
 
         total_percentage = {}
         total_percentage['index'] = 0
@@ -434,14 +452,14 @@ class Indicator():
         gdf['value'] = gdf['diversity']
 
         def get_color(value, vmin, vmax):
-            cmap = plt.cm.RdYlGn
+            cmap = plt.cm.turbo
             norm = plt.Normalize(vmin, vmax)
             color = cmap(norm(value))
             return [int(color[0] * 255), int(color[1] * 255), int(color[2] * 255)]
 
         gdf['color'] = gdf['value'].apply(lambda v: get_color(v, 0, 2))
 
-        gdf = gdf[['code', 'value', 'color', 'diversity']]
+        gdf = gdf[['code', 'value', 'color', 'percentages']]
         # gdf.rename({'code': 'hex'}, inplace=True)
 
         if self.geometry:
@@ -478,14 +496,15 @@ class Indicator():
         df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
 
         result_json = {
-            'indicator': df_json
+            'indicator': df_json,
+            'landuse_id': self.landuse_id
         }
 
         if len(self.secondary_data) > 0:
             result_json['resume'] = self.secondary_data
         
-        if self.bounds and self.bounds_border:
-            result_json['bounds_border'] = self.bounds_border.wkb.hex()
+        # if self.bounds and self.bounds_border:
+            # result_json['bounds_border'] = self.bounds_border.wkb.hex()
 
         end = time.time()
         print('time:', end - self.init_time)

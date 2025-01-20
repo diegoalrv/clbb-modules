@@ -108,7 +108,7 @@ class Indicator():
         #     self.indicator = cached_indicator
         #     return
 
-        self.bus_stops = self.load_bus_stops()
+        self.bus_stops, self.deleted_bus_stops = self.load_bus_stops()
         if 'project' not in self.bus_stops.columns:
             self.bus_stops['project'] = None
         print('bus_stops:', len(self.bus_stops))
@@ -163,6 +163,7 @@ class Indicator():
             del base_indicator['wkb']
             base_indicator = gpd.GeoDataFrame(base_indicator, geometry='geometry')
         
+        base_indicator.rename(columns={'value': 'mins'}, inplace=True)
         return base_indicator
 
     # in case it was already generated and is stored in the server
@@ -219,6 +220,10 @@ class Indicator():
             data_gdf = gpd.GeoDataFrame(data_df)
             data_gdf.set_geometry('geometry', inplace=True)
             data_gdf.set_crs(4326, inplace=True)
+        
+        data_gdf['updating'] = None
+        data_gdf['change_type'] = 'Create'
+        deleted_data_gdf = pd.DataFrame()
 
         if not self.base:
             for current_project in self.projects:
@@ -241,8 +246,10 @@ class Indicator():
                     data_gdf = pd.concat([data_gdf, modify_gdf])
 
                     delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+                    deleted_data_gdf = pd.concat([deleted_data_gdf, delete_gdf])
                     ids_to_delete = list(delete_gdf['updating']) 
                     data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+                    data_gdf.at
 
                     create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
                     data_gdf = pd.concat([data_gdf, create_gdf])
@@ -267,13 +274,18 @@ class Indicator():
                     data_gdf = pd.concat([data_gdf, modify_gdf])
 
                     delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+                    deleted_data_gdf = pd.concat([deleted_data_gdf, delete_gdf])
                     ids_to_delete = list(delete_gdf['updating']) 
                     data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
 
                     create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
                     data_gdf = pd.concat([data_gdf, create_gdf])
 
-        return data_gdf
+            print(deleted_data_gdf)
+            deleted_data_gdf = gpd.GeoDataFrame(deleted_data_gdf, geometry='geometry')
+            deleted_data_gdf.set_crs(4326, inplace=True)
+            print(deleted_data_gdf)
+        return data_gdf, deleted_data_gdf
 
     def load_edges(self):
         if self.cache:
@@ -605,7 +617,7 @@ class Indicator():
 
         #####################################################
 
-        accessibility = pd.merge(grid_with_nearest_node, accessibility, on='id').rename(columns={1: 'distance_to_nearest_poi', 'poi1': 'bus_stop_id'})
+        accessibility = pd.merge(grid_with_nearest_node, accessibility, on='id').rename(columns={1: 'distance_to_nearest_poi', 'poi1': 'bus_stop'})
         accessibility['distance'] = accessibility['distance_to_nearest_node'] + accessibility['distance_to_nearest_poi']
 
         #####################################################
@@ -618,30 +630,52 @@ class Indicator():
         # here, the DataFrame creates a column with the cell code of resolution APERTURE_SIZE that contains each row point
         # distance[hex_col] = distance.apply(lambda p: h3.latlng_to_cell(p.geometry.y,p.geometry.x,APERTURE_SIZE),1)
         
+        bus_stops_update_project = self.bus_stops[['updating', 'project', 'change_type']]
+        bus_stops_update_project = bus_stops_update_project[bus_stops_update_project['change_type'] != 'Create']
+        bus_stops_update_project.reset_index(drop=True, inplace=True)
+        bus_stops_update_project.rename(columns={'updating': 'bus_stop'}, inplace=True)
+
+        print(distance['bus_stop'].value_counts(dropna=False))
+
+        notna_distance = distance[distance['bus_stop'].notna()]
+        notna_distance['bus_stop'] = notna_distance['bus_stop'].astype(int)
+        notna_distance = notna_distance.merge(bus_stops_update_project, how='left', on='bus_stop')
+
+        ########################################
+        
         bus_stops_project = self.bus_stops[['project']]
         bus_stops_project.reset_index(inplace=True)
-        bus_stops_project.rename(columns={'id': 'bus_stop_id'}, inplace=True)
+        bus_stops_project.rename(columns={'id': 'bus_stop'}, inplace=True)
 
-        print(distance['bus_stop_id'].value_counts(dropna=False))
+        print(distance['bus_stop'].value_counts(dropna=False))
 
-        notna_distance = distance[distance['bus_stop_id'].notna()]
-        notna_distance['bus_stop_id'] = notna_distance['bus_stop_id'].astype(int)
-        notna_distance = notna_distance.merge(bus_stops_project, how='left', on='bus_stop_id')
-        notna_distance = notna_distance[['bus_stop_id', 'project']]
+        notna_distance = distance[distance['bus_stop'].notna()]
+        notna_distance['bus_stop'] = notna_distance['bus_stop'].astype(int)
+        notna_distance = notna_distance.merge(bus_stops_project, how='left', on='bus_stop')
+        notna_distance = notna_distance[['bus_stop', 'project']]
         print('notna_distance columns before', notna_distance.columns)
         notna_distance.reset_index(inplace=True)
         print('notna_distance columns after', notna_distance.columns)
 
         print('distance columns before', distance.columns)
+        distance = distance[[hex_col, 'distance']]
         distance.reset_index(inplace=True)
         print('distance columns after', distance.columns)
 
         distance = distance.merge(notna_distance, how='left', on='index')
         distance['project'] = distance['project'].fillna(np.nan)
 
-        distance_m = distance[[hex_col, 'distance', 'project']]
+        distance_m = distance[[hex_col, 'distance', 'project', 'bus_stop']]
         distance_m = distance_m.sort_values(by=[hex_col, 'distance'])
         distance_by_hex = distance_m.groupby(hex_col)
+
+        # try to make it mode based so 5 1 5 cases don't give 1
+        # source2.groupby(['Country','City'])['Short name'].agg(lambda x: pd.Series.mode(x)[0])
+
+        # distance_m_mode = distance_m.copy()
+        # distance_m_mode['int_mins'] = distance_m_mode['mins'].astype(int)
+        # distance_m_mode['group_id'] = 0
+        # distance_m_mode.groupby(['group_id'])['int_mins'].agg(lambda x: pd.Series.mode(x)[0])
 
         # i think this should me the median() not the mean()
         # points close to others will have almost the same times, except for the cases of
@@ -649,7 +683,6 @@ class Indicator():
         # in case there's a wall, left side is 15 min of a busstop and right side 60 min,
         # sending a result of around 37.5 mins is not accurate. instead, picking the
         # median, the result will be around 15 mins or around 60 mins
-
         distance_m = distance_by_hex.apply(lambda group: group.iloc[len(group) // 2]).reset_index(drop=True)
 
         #####################################################
@@ -677,21 +710,48 @@ class Indicator():
     def compute_differences(self):
         # Project percentual change
         
-        left = self.base_indicator.copy()[['code', 'mins', 'distance', 'geometry']]
-        left.rename(columns={'mins': 'base_mins', 'distance': 'base_distance'}, inplace=True)
+        left = self.base_indicator.copy()[['code', 'mins', 'distance', 'bus_stop', 'geometry']]
+        left.rename(columns={'mins': 'base_mins', 'distance': 'base_distance', 'bus_stop': 'base_bus_stop'}, inplace=True)
 
-        right = self.indicator.copy()[['code', 'mins', 'distance', 'project']]
-        right.rename(columns={'mins': 'new_mins', 'distance': 'new_distance'}, inplace=True)
+        right = self.indicator.copy()[['code', 'mins', 'distance', 'project', 'bus_stop']]
+        right.rename(columns={'mins': 'new_mins', 'distance': 'new_distance', 'bus_stop': 'new_bus_stop'}, inplace=True)
 
         conclusion = left.merge(right, on='code')
         conclusion['change_mins'] = conclusion['new_mins'] - conclusion['base_mins']
         conclusion['change_distance'] = conclusion['new_distance'] - conclusion['base_distance']
         self.conclusion = gpd.GeoDataFrame(conclusion, geometry='geometry')
-        
+
+        # in case a busstop is deleted by a project deletion change, it sets it's np (negative project)
+        base_indicator = self.base_indicator[['code', 'bus_stop']]
+        base_indicator['bus_stop'] = base_indicator['bus_stop'].astype(int)
+        base_indicator.rename(columns={'bus_stop': 'base_bus_stop'}, inplace=True)
+        conclusion = self.conclusion.merge(base_indicator, how='left', on='code')
+
         upgrade = conclusion.copy()
+        
+        # def hex_change(row):
+        #     if row['bus_stop'] != row['base_bus_stop']:
+        #         if row['change_mins'] < 0:
+        #             project = row['project']
+        #             return - row['change_mins']
+        #         if row['change_mins'] > 0:
+        #             responsible = find project that moved or deleted the bus stop
+        #             if responsible
+        #                 add bad score
+        #     else:
+        #         if row['change_mins'] < 0:
+        #             project = find project that updated bus stop
+        #             add good score
+        #         if row['change_mins'] > 0:
+        #             project = find project that updated bus stop
+        #             add bad score
+        
+        # upgrade = upgrade.apply(hex_change, axis=1)
+        # upgrade['percentage'] = upgrade.apply(hex_change, axis=1)
         
         if self.bounds:
             upgrade = upgrade[upgrade['geometry'].apply(lambda g: intersects(self.bounds, g))]
+            upgrade = upgrade[~upgrade['geometry'].is_empty]
             self.bounds_border = upgrade.copy()['geometry'].union_all(method='coverage')
 
         cells_to_divide_in = len(upgrade)
@@ -711,7 +771,7 @@ class Indicator():
         result['percentage'] = round(result['percentage'].fillna(0), 2)
         result = result[['project', 'percentage']]
         result['project_name'] = result['project'].apply(lambda project: self.projects_name[project])
-        result.rename(columns={'project_name': 'label', 'percentage': 'value'}, inplace=True)
+        result.rename(columns={'project_name': 'label', 'percentage': 'percentage'}, inplace=True)
         improvement_percentage_data = result.to_dict(orient='records')
 
         improvement_percentage = {}
@@ -731,26 +791,29 @@ class Indicator():
         
         # if self.bounds:
         #     upgrade = upgrade[upgrade['geometry'].apply(lambda g: intersects(self.bounds, g))]
+        #     upgrade = upgrade[~upgrade['geometry'].is_empty]
         #     self.bounds_border = upgrade.copy()['geometry'].union_all(method='coverage')
 
         # cells_to_divide_in = len(upgrade)
         # total_base_mins = upgrade['base_mins'].sum()
 
-        # upgrade['change_mins'] = upgrade['new_mins'] - upgrade['base_mins']
         # upgrade.dropna(subset=['project'], inplace=True)
-        # upgrade = upgrade[['project', 'change_mins']].reset_index(drop=True)
+        # upgrade['project'] = upgrade['project'].astype(int)
+        # upgrade = upgrade[['project', 'new_mins', 'base_mins']].reset_index(drop=True)
         # upgrade = upgrade.groupby('project')
         # upgrade = upgrade.sum()
         # upgrade = upgrade.reset_index()
-        # upgrade['project'] = upgrade['project'].astype(int)
-        # # upgrade['change_mins'] = upgrade['change_mins'] / total_base_mins
+        # upgrade['change_mins'] = upgrade['new_mins'] - upgrade['base_mins']
+        # upgrade['percentage'] = upgrade['change_mins'] * (100.0 / upgrade['base_mins'])
+        # upgrade = upgrade[['project', 'percentage']].reset_index(drop=True)
 
         # temp = upgrade.copy()
         # df_list = pd.DataFrame({'project': self.counting_projects})
         # result = pd.merge(df_list, temp, on='project', how='left')
-        # result['change_mins'] = round(result['change_mins'].fillna(0), 2)
-        # result = result[['project', 'change_mins']]
-        # result['label'] = result['project'].apply(lambda project: self.projects_name[project])
+        # result['percentage'] = round(result['percentage'].fillna(0), 2)
+        # result = result[['project', 'percentage']]
+        # result['project_name'] = result['project'].apply(lambda project: self.projects_name[project])
+        # result.rename(columns={'project_name': 'label', 'percentage': 'value'}, inplace=True)
         # improvement_flat_data = result.to_dict(orient='records')
 
         # improvement_flat = {}
@@ -759,8 +822,8 @@ class Indicator():
         # improvement_flat['data'] = improvement_flat_data
         # improvement_flat['positive'] = True
         # improvement_flat['name'] = 'Mejora absoluta'
-        # improvement_flat['unit'] = 'minutos'
-        # improvement_flat['unit_short'] = 'min'
+        # improvement_flat['unit'] = '%'
+        # improvement_flat['unit_short'] = '%'
 
         # self.secondary_data.append(improvement_flat)
 
@@ -808,7 +871,7 @@ class Indicator():
 
         gdf['color'] = gdf['value'].apply(lambda v: get_color(v, 0, 60))
 
-        gdf = gdf[['code', 'value', 'color', 'mins', 'distance', 'display_text', 'project', 'geometry']]
+        gdf = gdf[['code', 'value', 'color', 'distance', 'display_text', 'project', 'bus_stop', 'geometry']]
         # gdf.rename({'code': 'hex'}, inplace=True)
 
         if self.geometry:
@@ -892,7 +955,7 @@ class Indicator():
                 if self.indicator.empty:
                     self.execute_process()
 
-                if not self.base and not self.base_indicator.empty:
+                if not self.base and len(self.projects) > 0 and not self.base_indicator.empty:
                     self.compute_differences()
             except Exception as e:
                 print('exception in execute_process:',e)
