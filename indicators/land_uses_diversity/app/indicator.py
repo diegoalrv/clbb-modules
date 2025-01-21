@@ -17,6 +17,9 @@ class Indicator():
         self.data = None
         self.indicator = pd.DataFrame()
         self.gdf_overlay = pd.DataFrame()
+        self.bounds = None
+        self.bounds_border = None
+        self.landuse_id = None
         self.secondary_data = []
         self.indicator_type = 'numeric'
         self.keywords = []
@@ -369,10 +372,10 @@ class Indicator():
 
         uses = list(set(gdf_area['use']))
         uses.sort()
-        self.landuse_id = uses_id = {v: uses.index(v) for v in uses}
+        self.landuse_id = {v: uses.index(v) for v in uses}
 
         percentage_by_hex = gdf_area.groupby('code')
-        percentage_by_hex = percentage_by_hex.apply(lambda group: {uses_id[row['use']]: round(row['fraction_by_use'], 3) for index, row in group.iterrows() if round(row['fraction_by_use'], 3) > 0})
+        percentage_by_hex = percentage_by_hex.apply(lambda group: {self.landuse_id[row['use']]: round(row['fraction_by_use'], 3) for index, row in group.iterrows() if round(row['fraction_by_use'], 3) > 0})
 
         ########################################################
 
@@ -496,9 +499,11 @@ class Indicator():
         df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
 
         result_json = {
-            'indicator': df_json,
-            'landuse_id': self.landuse_id
+            'indicator': df_json
         }
+
+        if self.landuse_id:
+            result_json['landuse_id'] = self.landuse_id
 
         if len(self.secondary_data) > 0:
             result_json['resume'] = self.secondary_data
