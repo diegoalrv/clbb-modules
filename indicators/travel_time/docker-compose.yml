@@ -1,6 +1,6 @@
 services:
   app:
-    container_name: proximity_bus_stops
+    container_name: bus_travel_time
     build: .
     env_file:
       - .env
@@ -9,6 +9,7 @@ services:
     volumes:
       # - ../../shared:/usr/src/app/shared
       - clbb-modules-cache:/usr/src/app/shared
+      - ./assets:/usr/src/app/assets
 
 volumes:
   clbb-modules-cache:
