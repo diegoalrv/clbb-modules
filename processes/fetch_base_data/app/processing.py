@@ -12,7 +12,8 @@ class Processing:
             'node': ['id', 'osm_id', 'wkb'],
             'street': ['id', 'name', 'osm_id', 'osm_src', 'osm_dst', 'src', 'dst', 'max_speed', 'lanes', 'length', 'wkb'],
             'busstop': ['id', 'name', 'bus_stop_type', 'wkb'],
-            'landuse': ['id', 'use', 'wkb']
+            'landuse': ['id', 'use', 'wkb'],
+            'neighborhood': ['id', 'name', 'residents', 'wkb']
         }
         pass
     

@@ -90,12 +90,14 @@ class Indicator():
         self.counting_projects = []
 
         if not self.base:
-            indicator, resume = self.load_base_indicator()
+            indicator, landuse_id, resume = self.load_base_indicator()
             self.base_indicator = indicator
+            self.base_landuse_id = landuse_id
             self.base_secondary_data = resume
 
             if not self.base_indicator.empty and len(self.projects) == 0:
                 self.indicator = self.base_indicator
+                self.landuse_id = self.base_landuse_id
                 self.secondary_data = self.base_secondary_data
                 return
 
@@ -149,8 +151,13 @@ class Indicator():
         else:
             resume = {}
 
+        if 'landuse_id' in base_indicator_json.keys():
+            landuse_id = base_indicator_json['landuse_id']
+        else:
+            landuse_id = None
+
         base_indicator.rename(columns={'value': 'diversity'}, inplace=True)
-        return base_indicator, resume
+        return base_indicator, landuse_id, resume
 
     def load_land_uses(self):
         if self.cache:
@@ -421,10 +428,10 @@ class Indicator():
     def compute_percentage(self):
         gdf_overlay = self.gdf_overlay
             
-        # if self.bounds:
-        #     gdf_overlay = gdf_overlay[gdf_overlay['geometry'].apply(lambda g: intersects(self.bounds, g))]
-        #     gdf_overlay = gdf_overlay[~gdf_overlay['geometry'].is_empty]
-        #     self.bounds_border = gdf_overlay.copy()['geometry'].union_all(method='coverage')
+        if self.bounds:
+            gdf_overlay = gdf_overlay[gdf_overlay['geometry'].apply(lambda g: intersects(self.bounds, g))]
+            gdf_overlay = gdf_overlay[~gdf_overlay['geometry'].is_empty]
+            # self.bounds_border = gdf_overlay.copy()['geometry'].union_all(method='unary')
 
         gdf_area_by_use = gdf_overlay.groupby(['use']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_by_use'})
         total_area = gdf_area_by_use['area_by_use'].sum()
@@ -531,7 +538,12 @@ class Indicator():
             result_json_str = json.dumps(result_json, indent=4)
             with open(output_path, "w") as file:
                 file.write(result_json_str)
-    
+
+        if 'landuse_id' in result_json.keys():
+            print('landuse_id', result_json['landuse_id'])
+        else:
+            print('there wasn\'t landuse_id')
+
     ############################################################
 
     def execute(self):

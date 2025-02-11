@@ -881,8 +881,8 @@ class Indicator():
         histogram['data'] = histogram_data
         histogram['positive'] = False
         histogram['name'] = 'Histograma'
-        histogram['unit'] = 'minutos'
-        histogram['unit_short'] = 'min'
+        histogram['unit'] = 'hexágonos'
+        histogram['unit_short'] = 'hex'
         
         self.secondary_data.append(histogram)
 
@@ -909,7 +909,7 @@ class Indicator():
 
         print('a')
         neighborhoods = self.neighborhoods.copy()
-
+        
         # area de la poblacion
         neighborhoods.to_crs(32718, inplace=True)
         neighborhoods['neighborhood_area'] = neighborhoods['geometry'].area
