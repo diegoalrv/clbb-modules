@@ -1,0 +1,20 @@
+services:
+  app:
+    container_name: sync_assets
+    build: .
+    env_file:
+      - .env
+    # networks:
+      # - thno
+    volumes:
+      # - ../../shared:/usr/src/app/shared
+      - clbb-modules-cache:/usr/src/app/shared
+      - ./assets:/usr/src/app/assets
+
+volumes:
+  clbb-modules-cache:
+    external: true
+
+# networks:
+#   thno:
+#     external: true
