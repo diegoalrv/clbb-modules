@@ -1,6 +1,6 @@
 services:
   app:
-    container_name: proximity_urban_spaces
+    container_name: urban_spaces_quality
     build: .
     env_file:
       - .env

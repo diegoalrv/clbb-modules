@@ -6,7 +6,7 @@ import osmnx as ox
 import json
 import h3
 import matplotlib.pyplot as plt
-from shapely import wkb, intersects, STRtree
+from shapely import wkb, STRtree
 from shapely.geometry import Polygon, LineString, Point, box
 from shapely.prepared import prep
 
@@ -18,7 +18,6 @@ class Indicator():
     def __init__(self):
         self.init_time = time.time()
         self.indicator = pd.DataFrame()
-        self.base_indicator = pd.DataFrame()
         self.secondary_data = []
         self.upgrade = pd.DataFrame()
         self.bounds = None
@@ -37,7 +36,7 @@ class Indicator():
 
         if self.scenario == -1:
             raise Exception({'error': 'scenario not provided'})
-        
+
         if self.user == -1:
             raise Exception({'error': 'user not provided'})
         
@@ -56,11 +55,6 @@ class Indicator():
         self.cache = os.getenv('cache', 'True') == 'True'
         self.geometry = os.getenv('geometry', 'False') == 'True'
         self.base = os.getenv('base', 'False') == 'True'
-
-        self.category = os.getenv('category', None)
-        self.super_category = os.getenv('super_category', None)
-        self.shop = os.getenv('shop', None)
-        self.super_shop = os.getenv('super_shop', None)
 
         self.interval_size = int(os.getenv('interval_size', 5))
         self.vmin = int(os.getenv('vmin', 0))
@@ -86,7 +80,7 @@ class Indicator():
             print(bounds)
         except Exception as e:
             self.bounds = None
-
+    
     def load_resource(self, resource, environment, user, fields='', query_params='', update=False):
         parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
         if self.cache and os.path.exists(parquet_path):
@@ -112,12 +106,27 @@ class Indicator():
 
             base_data = next((item['data'] for item in data if item['type'] == 'base'), [])
 
-            base_df = pd.DataFrame(base_data)
-            base_df['geometry'] = base_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-            del base_df['wkb']
-            data_gdf = gpd.GeoDataFrame(base_df)
-            data_gdf.set_crs(4326, inplace=True)
-            data_gdf.set_index('id', inplace=True)
+            default_fields = ['id', 'scenario', 'project', 'data_source', 'updating', 'change_type', 'source_type', 'geometry']
+            if not base_data:
+                fields = list(set(fields.split(',')  + default_fields))
+                data_gdf = gpd.GeoDataFrame(columns=fields, geometry='geometry', crs='EPSG:4326')
+                data_gdf.set_index('id', inplace=True)
+            else:
+                base_df = pd.DataFrame(base_data)
+                base_df['geometry'] = base_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+                del base_df['wkb']
+                data_gdf = gpd.GeoDataFrame(base_df, geometry='geometry', crs='EPSG:4326')
+                data_gdf.set_index('id', inplace=True)
+
+            # fields = list(set(fields.split(',') + ['id', 'scenario', 'project', 'data_source', 'updating', 'change_type', 'source_type', 'wkb']))
+            # base_df = pd.DataFrame(base_data, columns=fields)
+            # base_df['geometry'] = base_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+            # del base_df['wkb']
+            # data_gdf = gpd.GeoDataFrame(base_df, columns=fields)
+            # data_gdf.set_crs(4326, inplace=True)
+            # data_gdf.set_index('id', inplace=True)
+        
+        data_gdf['project'] = None
 
         base_data_gdf = data_gdf.copy()
         deleted_data_gdf = pd.DataFrame()
@@ -130,6 +139,8 @@ class Indicator():
                 if project_entry['project'] not in self.projects:
                     continue
 
+                print('ADDING PROJECT', project_entry['project'])
+
                 delta_df = pd.DataFrame.from_records(project_entry['data'])
                 if not delta_df.empty:
                     if project_entry['project'] not in self.counting_projects:
@@ -140,6 +151,7 @@ class Indicator():
                     delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
                     delta_gdf.set_crs(4326, inplace=True)
                     delta_gdf.set_index('id', inplace=True)
+                    delta_gdf['project'] = project_entry['project']
 
                     delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
                     delete_gdf.set_crs(4326, inplace=True)
@@ -175,6 +187,7 @@ class Indicator():
                         delta_gdf = gpd.GeoDataFrame(delta_df)
                         delta_gdf.set_crs(4326, inplace=True)
                         delta_gdf.set_index('id', inplace=True)
+                        delta_gdf['project'] = project_entry['project']
 
                         delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
                         delete_gdf.set_crs(4326, inplace=True)
@@ -235,40 +248,28 @@ class Indicator():
 
         print(self.projects)
 
-        # if not self.base:
-        #     self.base_indicator = self.load_base_indicator()
+        if not self.base:
+            self.base_indicator = self.load_base_indicator()
 
-        #     if not self.base_indicator.empty and len(self.projects) == 0:
-        #         self.indicator = self.base_indicator
-        #         return
+            if not self.base_indicator.empty and len(self.projects) == 0:
+                self.indicator = self.base_indicator
+                return
 
-        query_params = ''
-        if self.category:
-            query_params = f'category={self.category}'
-        elif self.super_category:
-            query_params = f'super_category={self.super_category}'
-        elif self.shop:   
-            query_params = f'shop={self.shop}'
-        elif self.super_shop:
-            query_params = f'super_shop={self.super_shop}'
+        cable_car_stops, _, _ = self.load_resource('cablecarstop', environment_id, user['id'], '')
+        print('cablecarstops:', len(cable_car_stops))
+        print('cablecarstops:', cable_car_stops)
 
-        self.amenities, _, self.deleted_amenities = self.load_resource('amenity', environment_id, user['id'], 'name,category,super_category,shop,super_shop', query_params)
+        self.bus_stops, _, self.deleted_bus_stops = self.load_resource('busstop', environment_id, user['id'], '')
+        print('busstops:', len(self.bus_stops))
 
-        if self.category:
-            self.amenities = self.amenities[self.amenities['category'] == self.category]
-            self.deleted_amenities = self.amenities[self.amenities['category'] == self.category]
-        elif self.super_category:
-            self.amenities = self.amenities[self.amenities['super_category'] == self.super_category]
-            self.deleted_amenities = self.amenities[self.amenities['super_category'] == self.super_category]
-        elif self.shop:
-            self.amenities = self.amenities[self.amenities['shop'] == self.shop]
-            self.deleted_amenities = self.amenities[self.amenities['shop'] == self.shop]
-        elif self.super_shop:
-            self.amenities = self.amenities[self.amenities['super_shop'] == self.super_shop]
-            self.deleted_amenities = self.amenities[self.amenities['super_shop'] == self.super_shop]
-            
-        print('amenities:', len(self.amenities))
-        print('amenity columns:', self.amenities.columns)
+        print(self.bus_stops)
+        print(cable_car_stops)
+
+        self.bus_stops = gpd.GeoDataFrame(pd.concat([self.bus_stops, cable_car_stops]), geometry='geometry', crs=self.bus_stops.crs)
+        print('busstops:', len(self.bus_stops))
+
+        # self.cable_car_lines, _, _ = self.load_resource('cablecar', environment_id, user['id'], '')
+        # print('cablecarlines:', len(self.cable_car_lines))
 
         self.neighborhoods, _, self.deleted_neighborhoods = self.load_resource('neighborhood', environment_id, user['id'], 'name,residents')
         print('neighborhoods:', len(self.neighborhoods))
@@ -276,30 +277,49 @@ class Indicator():
         self.blocks, _, self.deleted_blocks = self.load_resource('block', environment_id, user['id'], 'density')
         print('blocks:', len(self.blocks))
 
-        self.edges, _, _ = self.load_resource('street', environment_id, user['id'], 'length,src,dst', 'network=walk')
+        self.edges, _, _ = self.load_resource('street', environment_id, user['id'], 'length,src,dst')
+        # self.edges = self.edges[self.edges['drive'] == True]
         print('edges:', len(self.edges))
+        print('one_way', self.edges['one_way'].value_counts(dropna=False))
 
-        self.nodes, _, _ = self.load_resource('node', environment_id, user['id'])
+        edge_pairs = set(zip(self.edges['src'], self.edges['dst']))
+        def is_bidirectional(row):
+            return (row['dst'], row['src']) in edge_pairs
+        self.edges['one_way'] = ~self.edges.apply(is_bidirectional, axis=1)
+
+        new_reversed_edges = self.edges[self.edges['one_way'] == True]
+        new_reversed_edges['aux'] = new_reversed_edges['src']
+        new_reversed_edges['src'] = new_reversed_edges['dst']
+        new_reversed_edges['dst'] = new_reversed_edges['aux']
+        del new_reversed_edges['aux']
+        # new_reversed_edges['reversed'] = ~new_reversed_edges['reversed'].apply(lambda val: not val)
+        new_reversed_edges['reversed'] = ~new_reversed_edges['reversed']
+        self.edges = gpd.GeoDataFrame(pd.concat([self.edges, new_reversed_edges]), geometry='geometry', crs=self.edges.crs)
+        self.edges['one_way'] = False
+
+        self.nodes, _, _ = self.load_resource('node', environment_id, user['id'], update=True)
         print('nodes:', len(self.nodes))
-        
+
         ref_nodes = set(list(self.edges['src']) + list(self.edges['dst']))
-        self.nodes = pd.merge(self.nodes, pd.DataFrame(index=list(ref_nodes)), 'right', left_on='id', right_index=True)
-        
+        right = pd.DataFrame({'id': list(ref_nodes)})
+        self.nodes = pd.merge(self.nodes, right, 'right', 'id')
+
         # 1. Merge src coordinates
         src_coords = self.nodes[['id', 'geometry']].copy()
-        src_coords['src_coords'] = src_coords['geometry'].apply(lambda g: g.coords[0])
+        src_coords['src_coords'] = src_coords['geometry'].apply(lambda g: g.coords[0] if g else None)
         src_coords.drop(columns='geometry', inplace=True)
         edges_updated = self.edges.merge(src_coords.rename(columns={'id': 'src'}), on='src', how='left')
 
         # 2. Merge dst coordinates
         dst_coords = self.nodes[['id', 'geometry']].copy()
-        dst_coords['dst_coords'] = dst_coords['geometry'].apply(lambda g: g.coords[0])
+        dst_coords['dst_coords'] = dst_coords['geometry'].apply(lambda g: g.coords[0] if g else None)
         dst_coords.drop(columns='geometry', inplace=True)
         edges_updated = edges_updated.merge(dst_coords.rename(columns={'id': 'dst'}), on='dst', how='left')
 
         # 3. Vectorized LineString creation
         edges_updated['geometry'] = [
-            LineString([src, dst]) for src, dst in zip(edges_updated['src_coords'], edges_updated['dst_coords'])
+            LineString([src, dst]) if src is not None and dst is not None else np.nan
+            for src, dst in zip(edges_updated['src_coords'], edges_updated['dst_coords'])
         ]
 
         # 4. Drop temporary columns
@@ -310,14 +330,17 @@ class Indicator():
 
         self.area = self.load_area_of_interest()
         print('area:', len(self.area))
-        
+
+        start = time.perf_counter()
         # try:
         #     self.grid_points = self.load_grid_points()
         # except:
         grid_points = self.get_grid_points_from_area(self.area.to_crs(32718).geometry.iloc[0], self.x_spacing, self.y_spacing)
         self.grid_points = grid_points.set_crs(32718).to_crs(4326)
         print('grid_points:', len(self.grid_points))
-        
+        print(f'------------------- 4 part took {time.perf_counter() - start:.2f}s')
+
+        start = time.perf_counter()
         slope_edges = self.edges.copy()
 
         path = f'/usr/src/app/shared/assets/array_compressed.npz'
@@ -329,16 +352,22 @@ class Indicator():
                 self.height_map_res = 5.0
             except Exception as e:
                 print(f"Error al leer el archivo {path}: {str(e)}")
+        print(f'------------------- 5.1 part took {time.perf_counter() - start:.2f}s')
 
         # --- 5.2 Sample Heightmap
+        start = time.perf_counter()
         height_nodes = self.nodes.copy()
         height_nodes_proj = height_nodes.to_crs(32718)
+        print(height_nodes_proj[height_nodes_proj['geometry'].is_empty])
+        print(height_nodes_proj[height_nodes_proj['geometry'].isna()])
         height_nodes['height'] = [
             self.sample_raster(x, y, self.heightmap_bounds[0], self.heightmap_bounds[1], self.height_map_res, self.height_map_res, self.heightmap)
             for x, y in zip(height_nodes_proj.geometry.x, height_nodes_proj.geometry.y)
         ]
+        print(f'------------------- 5.2 part took {time.perf_counter() - start:.2f}s')
 
         # --- 5.3 Compute Slope and Angle
+        start = time.perf_counter()
         height_cols = height_nodes[['id', 'height']]
 
         slope_edges = slope_edges.merge(height_cols.rename(columns={'height': 'src_height'}), left_on='src', right_on='id')
@@ -356,8 +385,10 @@ class Indicator():
 
         slope_edges['slope'] = slopes
         slope_edges['angle'] = angles
+        print(f'------------------- 5.3 part took {time.perf_counter() - start:.2f}s')
 
         # --- 5.4 Compute Speed and Travel Time
+        start = time.perf_counter()
         speed_m_per_min = 4 * 1000 / 60  # 4 km/h
 
         # Only consider uphill angles
@@ -367,13 +398,18 @@ class Indicator():
 
         slope_edges['speed'] = speed
         slope_edges['mins'] = mins
+        print(f'------------------- 5.4 part took {time.perf_counter() - start:.2f}s')
 
+        start = time.perf_counter()
         a, b = self.nodes_edges_to_net_format(self.nodes, slope_edges)
         print('a:', len(a))
         print('b:', len(b))
+        print(f'------------------- 6 part took {time.perf_counter() - start:.2f}s')
 
+        start = time.perf_counter()
         net = self.make_network(a, b)
         self.net = net
+        print(f'------------------- 7 part took {time.perf_counter() - start:.2f}s')
         pass
 
     def load_scenario(self):
@@ -383,7 +419,7 @@ class Indicator():
         return data
 
     def load_base_indicator(self):
-        input_path = f'/usr/src/app/shared/zone_{self.zone}/amenities_proximity/base{"_geo" if self.geo_output else ""}.json'
+        input_path = f'/usr/src/app/shared/zone_{self.zone}/bus_stops_proximity/base{"_geo" if self.geo_output else ""}.json'
 
         if not os.path.exists(input_path):
             print(f"El archivo {input_path} no existe.")
@@ -448,8 +484,8 @@ class Indicator():
         )
 
         nodes = gpd.GeoDataFrame(data=nodes, geometry=nodes_gdf.geometry)
+        nodes.drop_duplicates('id', inplace=True)
         nodes.set_index('id', inplace=True)
-        nodes.drop_duplicates(inplace=True)
 
         edges = pd.DataFrame(
             {
@@ -539,263 +575,184 @@ class Indicator():
         return points_inside
 
     def execute_process(self):
-        print('computing indicator 2')
-
-        if len(self.amenities) > 0:
-
-            max_distance = 375  # in meters
-            num_pois = 1
-
-            self.amenities.set_index("id", inplace=True)
-            category = "amenities"
-            self.net.set_pois(
-                category=category,
-                maxdist=10_000_000,
-                maxitems=num_pois,
-                x_col=self.amenities.geometry.x.values,
-                y_col=self.amenities.geometry.y.values,
-            )
-            accessibility = self.net.nearest_pois(
-                distance=10_000_000,
-                category=category,
-                num_pois=num_pois,
-                include_poi_ids=True,
-            )
-
-            accessibility[1] = np.minimum(accessibility[1], max_distance)
-            accessibility = accessibility[accessibility[1] < max_distance]
-
-            #####################################################
-
-            grid_points = self.grid_points.copy()
-            grid_points['id'] = self.net.get_node_ids(grid_points['geometry'].x, grid_points['geometry'].y)
-
-            grid_with_nearest_node = pd.merge(grid_points, self.net.nodes_df, on="id")
-            print(len(grid_with_nearest_node))
-
-            origin_coords = np.stack([grid_with_nearest_node.geometry.x.values, grid_with_nearest_node.geometry.y.values], axis=1)
-            dest_coords = np.stack([grid_with_nearest_node["x"].values, grid_with_nearest_node["y"].values], axis=1)
-
-            grid_with_nearest_node["distance_to_nearest_node"] = np.array([
-                ox.distance.great_circle(*o[::-1], *d[::-1]) for o, d in zip(origin_coords, dest_coords)
-            ])
-
-            bounds = self.heightmap_bounds
-            res = self.height_map_res
-            hmap = self.heightmap
-
-            grid_with_nearest_node["src_height"] = self.sample_raster_batch(grid_with_nearest_node.geometry.x.values, grid_with_nearest_node.geometry.y.values, bounds, res, hmap)
-            grid_with_nearest_node["dst_height"] = self.sample_raster_batch(grid_with_nearest_node["x"].values, grid_with_nearest_node["y"].values, bounds, res, hmap)
-
-            speed_m_per_min = (4 * 1000) / 60  # 4 km/h in m/min
-
-            delta_height = grid_with_nearest_node["dst_height"] - grid_with_nearest_node["src_height"]
-            slope = delta_height / grid_with_nearest_node["distance_to_nearest_node"].replace(0, 0.01)
-            angle = np.degrees(np.arctan(slope.clip(lower=0)))
-
-            speed = speed_m_per_min * np.exp(-0.04 * angle)
-            grid_with_nearest_node["mins_to_nearest_node"] = grid_with_nearest_node["distance_to_nearest_node"] / speed
-
-            #####################################################
-
-            accessibility = pd.merge(grid_with_nearest_node, accessibility, on='id').rename(columns={1: 'mins_to_nearest_poi', 'poi1': 'amenity'})
-            accessibility['mins'] = accessibility['mins_to_nearest_node'] + accessibility['mins_to_nearest_poi']
-
-            #####################################################
-
-            mins = accessibility.copy()
-
-            # here, the DataFrame creates a column with the cell code of resolution APERTURE_SIZE that contains each row point
-            # mins['code'] = mins.apply(lambda p: h3.latlng_to_cell(p.geometry.y,p.geometry.x,APERTURE_SIZE),1)
-            
-            amenities_update_project = self.amenities[['updating', 'project', 'change_type']]
-            amenities_update_project = amenities_update_project[amenities_update_project['change_type'] != 'Create']
-            amenities_update_project.reset_index(drop=True, inplace=True)
-            amenities_update_project.rename(columns={'updating': 'amenity'}, inplace=True)
-
-            notna_mins = mins[mins['amenity'].notna()]
-            notna_mins['amenity'] = notna_mins['amenity'].astype(int)
-            notna_mins = notna_mins.merge(amenities_update_project, how='left', on='amenity')
-
-            ########################################
-            
-            amenities_project = self.amenities[['project']]
-            amenities_project.reset_index(inplace=True)
-            amenities_project.rename(columns={'id': 'amenity'}, inplace=True)
-
-            notna_mins = mins[mins['amenity'].notna()]
-            notna_mins['amenity'] = notna_mins['amenity'].astype(int)
-            notna_mins = notna_mins.merge(amenities_project, how='left', on='amenity')
-            notna_mins = notna_mins[['amenity', 'project']]
-            notna_mins.reset_index(inplace=True)
-
-            mins = mins[['mins', 'geometry']]
-            mins.reset_index(inplace=True)
-            
-            mins['code'] = mins.geometry.apply(lambda p: h3.latlng_to_cell(p.y, p.x, self.resolution))
-
-            mins = mins.merge(notna_mins, how='left', on='index')
-            mins['project'] = mins['project'].fillna(np.nan)
-
-            mins_m = mins[['code', 'mins', 'project', 'amenity']]
-
-            # i think this should me the median() not the mean()
-            # points close to others will have almost the same times, except for the cases of
-            # walls, cliffs or elements that divide the groups within a cell.
-            # in case there's a wall, left side is 15 min of a amenity and right side 60 min,
-            # sending a result of around 37.5 mins is not accurate. instead, picking the
-            # median, the result will be around 15 mins or around 60 mins
+        print("computing indicator")
         
-            # Round to nearest whole minute (or 0.5, depending on desired precision)
-            mins_m['rounded_mins'] = mins_m['mins'].round()  # or .round(1) for 0.1 precision
+        print("a")
 
-            # Group and find the most common rounded value per code
-            modes = mins_m.groupby('code')['rounded_mins'].agg(lambda x: x.mode().iloc[0])
+        max_distance = 375  # in meters
+        num_pois = 1
 
-            # Merge to get original rows that match the mode (on rounded values)
-            merged = mins_m.merge(modes, on='code', suffixes=('', '_mode'))
-            filtered = merged[merged['rounded_mins'] == merged['rounded_mins_mode']]
+        bus_stops = self.bus_stops.set_index("id")
 
-            # Drop duplicates: keep one row per hex code
-            mins_m = filtered.drop_duplicates('code')
+        category = "bus_stops"
+        self.net.set_pois(
+            category=category,
+            maxdist=25000,
+            maxitems=num_pois,
+            x_col=bus_stops.geometry.x,
+            y_col=bus_stops.geometry.y,
+        )
+        accessibility = self.net.nearest_pois(
+            distance=25000,
+            category=category,
+            num_pois=num_pois,
+            include_poi_ids=True,
+        )
 
-            mins_m['geometry'] = mins_m['code'].apply(self.h3_to_polygon)
+        accessibility[1] = np.minimum(accessibility[1], max_distance)
+        accessibility = accessibility[accessibility[1] < max_distance]
 
-            mins_m = gpd.GeoDataFrame(mins_m, geometry='geometry', crs=4326)
+        #####################################################
+        print("b")
 
-            # mins_m = mins_by_hex.apply(lambda group: group.iloc[len(group) // 2]).reset_index(drop=True)
-            
-            #####################################################
+        grid_points = self.grid_points
+        grid_points["id"] = self.net.get_node_ids(grid_points.geometry.x, grid_points.geometry.y)
+        print(len(grid_points))
+        print("c")
 
-            max_mins = mins_m['mins'].max()
-            mins_m['mins'] = mins_m['mins'].fillna(max_mins)
-            mins_m['mins'] = round(mins_m['mins'], 2)
+        grid_with_nearest_node = pd.merge(grid_points, self.net.nodes_df, on="id")
+        print(len(grid_with_nearest_node))
+
+        origin_coords = np.stack([grid_with_nearest_node.geometry.x.values, grid_with_nearest_node.geometry.y.values], axis=1)
+        dest_coords = np.stack([grid_with_nearest_node["x"].values, grid_with_nearest_node["y"].values], axis=1)
+
+        grid_with_nearest_node["distance_to_nearest_node"] = np.array([
+            ox.distance.great_circle(*o[::-1], *d[::-1]) for o, d in zip(origin_coords, dest_coords)
+        ])
+
+        bounds = self.heightmap_bounds
+        res = self.height_map_res
+        hmap = self.heightmap
+
+        grid_with_nearest_node["src_height"] = self.sample_raster_batch(grid_with_nearest_node.geometry.x.values, grid_with_nearest_node.geometry.y.values, bounds, res, hmap)
+        grid_with_nearest_node["dst_height"] = self.sample_raster_batch(grid_with_nearest_node["x"].values, grid_with_nearest_node["y"].values, bounds, res, hmap)
+
+        speed_m_per_min = (4 * 1000) / 60  # 4 km/h in m/min
+
+        delta_height = grid_with_nearest_node["dst_height"] - grid_with_nearest_node["src_height"]
+        slope = delta_height / grid_with_nearest_node["distance_to_nearest_node"].replace(0, 0.01)
+        angle = np.degrees(np.arctan(slope.clip(lower=0)))
+
+        speed = speed_m_per_min * np.exp(-0.04 * angle)
+        grid_with_nearest_node["mins_to_nearest_node"] = grid_with_nearest_node["distance_to_nearest_node"] / speed
+
+        #####################################################
+        print('d')
+
+        accessibility = pd.merge(grid_with_nearest_node, accessibility, on='id').rename(columns={1: 'mins_to_nearest_poi', 'poi1': 'bus_stop'})
+        accessibility['mins'] = accessibility['mins_to_nearest_node'] + accessibility['mins_to_nearest_poi']
+        print(len(accessibility))
+
+        #####################################################
+        print('e')
+
+        mins = accessibility.copy()
+
+        # here, the DataFrame creates a column with the cell code of resolution APERTURE_SIZE that contains each row point
+        # mins['code'] = mins.apply(lambda p: h3.latlng_to_cell(p.geometry.y,p.geometry.x,APERTURE_SIZE),1)
+
+        mins = mins[['mins', 'bus_stop', 'geometry']]
+        mins['code'] = mins.geometry.apply(lambda p: h3.latlng_to_cell(p.y, p.x, self.resolution))
+
+        ########################################
+        print('f')
         
-            mins_m.to_crs(32718, inplace=True)
-        else:
-            mins_m = self.grid_points.copy()
+        bus_stops_project = self.bus_stops[['id', 'project']]
+        bus_stops_project.rename(columns={'id': 'bus_stop'}, inplace=True)
 
-            mins_m['code'] = mins_m.geometry.apply(lambda p: h3.latlng_to_cell(p.y, p.x, self.resolution))
-            mins_m = mins_m.drop_duplicates('code')
-            mins_m['geometry'] = mins_m['code'].apply(self.h3_to_polygon)
-            mins_m = gpd.GeoDataFrame(mins_m, geometry='geometry', crs=4326)
-            
-            mins_m['mins'] = np.inf
-            mins_m['project'] = None
-            mins_m['amenity'] = None
+        mins = pd.merge(mins, bus_stops_project[['bus_stop', 'project']], how='left', on='bus_stop')
+        mins['project'] = mins['project'].fillna(np.nan)
+
+        mins_m = mins[['code', 'mins', 'project', 'bus_stop', 'geometry']]
+
+        # i think this should me the median() not the mean()
+        # points close to others will have almost the same times, except for the cases of
+        # walls, cliffs or elements that divide the groups within a cell.
+        # in case there's a wall, left side is 15 min of a busstop and right side 60 min,
+        # sending a result of around 37.5 mins is not accurate. instead, picking the
+        # median, the result will be around 15 mins or around 60 mins
         
-        mins_m.to_crs(32718, inplace=True)
+        #####################################################
 
-        print('a')
-        blocks = self.blocks.copy()
+        # # Round to nearest whole minute (or 0.5, depending on desired precision)
+        # mins_m['rounded_mins'] = mins_m['mins'].round()  # or .round(1) for 0.1 precision
+
+        # # Group and find the most common rounded value per code
+        # modes = mins_m.groupby('code')['rounded_mins'].agg(lambda x: x.mode().iloc[0])
+
+        # # Merge to get original rows that match the mode (on rounded values)
+        # merged = mins_m.merge(modes, on='code', suffixes=('', '_mode'))
+        # filtered = merged[merged['rounded_mins'] == merged['rounded_mins_mode']]
+
+        # # Drop duplicates: keep one row per hex code
+        # mins_m = filtered.drop_duplicates('code')
+
+        # mins_m['geometry'] = mins_m['code'].apply(self.h3_to_polygon)
+
+        # mins_m = gpd.GeoDataFrame(mins_m, geometry='geometry', crs=4326)
+
+        #####################################################
+
+        # mins_m = mins_by_hex.apply(lambda group: group.iloc[len(group) // 2]).reset_index(drop=True)
+
+        #####################################################
+
+        mins_m = mins.groupby('code').agg({
+            'mins': 'mean',
+            'bus_stop': lambda x: x.mode().iloc[0] if not x.mode().empty else np.nan,
+            'project': lambda x: x.mode().iloc[0] if not x.mode().empty else np.nan
+        }).reset_index()
+
+        mins_m['geometry'] = mins_m['code'].apply(self.h3_to_polygon)
+
+        #####################################################
+        print('g')
+
+        mins_m['display_text'] = mins_m['mins'].apply(lambda x: f"Accessibility: {round(x)} {'mins' if round(x) != 1 else 'min'}" if np.isfinite(x) else 'Not accessible')
+
+        #####################################################
+
+        max_mins = mins_m['mins'].max()
+        mins_m['mins'] = mins_m['mins'].fillna(max_mins)
+        mins_m['mins'] = round(mins_m['mins'], 2)
+        
+        mins_m = gpd.GeoDataFrame(mins_m, geometry='geometry', crs=4326).to_crs(32718)
 
         # area de la poblacion
+        blocks = self.blocks.copy()
         blocks.to_crs(32718, inplace=True)
         blocks['block_area'] = blocks['geometry'].area
 
-        print('b')
-
         # densidad de poblacion por block
         blocks['block_density'] = blocks['density'].astype(float) # / (blocks['block_area'] / 10000.0)
-        
-        print("blocks['block_density'] before fillna")
-        print(blocks['block_density'].apply(lambda v: np.isnan(v)).value_counts())
-        
         blocks['block_density'] = blocks['block_density'].fillna(0.0)
-        print("blocks['block_density']")
-        print(blocks['block_density'].apply(lambda v: np.isnan(v)).value_counts())
-        
-        overlay = gpd.overlay(mins_m, blocks[['block_density', 'geometry']], how='intersection', keep_geom_type=False)
-        # overlay = overlay[~overlay['responsible'].notna()]
-        # del overlay['responsible']
-        # overlay = gpd.overlay(hex_upgrade, blocks[['block_density', 'block_area']], how='intersection', keep_geom_type=False)
 
-        print('c')
-        # area de cada parte resultante del intersection
-        # overlay.set_crs(4326, inplace=True)
-        # overlay.to_crs(32718, inplace=True)
+        overlay = gpd.overlay(mins_m, blocks[['block_density', 'geometry']], how='intersection', keep_geom_type=False)
         overlay['piece_area'] = overlay['geometry'].area
 
-        print('d')
         # area total de poblacion en cada hexagono
         hex_area_occupied = overlay[['code', 'piece_area']].groupby('code').sum().reset_index().rename(columns={'piece_area': 'hex_area_occupied'})
 
-        print('e')
         # overlay['fraction_area'] = overlay['piece_area'] / overlay['block_area']
         overlay = pd.merge(overlay, hex_area_occupied, how='left', on='code')
-
         overlay['fraction_in_hex'] = overlay['piece_area'] / overlay['hex_area_occupied']
-
         overlay['combined_density'] = overlay['fraction_in_hex'] * overlay['block_density']
 
-        print('f')
-        # overlay = overlay[['code', 'combined_density']].groupby('code').sum().reset_index().rename(columns={'combined_density': 'density'})
         overlay = overlay[['code', 'combined_density', 'piece_area']].groupby('code').sum().reset_index().rename(columns={'combined_density': 'density'})
         overlay['residents'] = overlay['density'] * overlay['piece_area'] / 10000.0
 
         mins_m = pd.merge(mins_m, overlay[['code', 'residents']], how='left', on='code')
         mins_m['residents'] = mins_m['residents'].fillna(0)
         mins_m = mins_m[mins_m['residents'] > 0]
-        mins_m['display_text'] = mins_m['mins'].apply(lambda x: f"Accessibility: {round(x)} {'mins' if round(x) != 1 else 'min'}" if np.isfinite(x) else 'Not accessible')
 
         mins_m.to_crs(4326, inplace=True)
         self.indicator = mins_m
+
+        print('\n\n##################################\n\n')
+        print(mins_m[mins_m['project'].notna()])
+        print('\n\n##################################\n\n')
+        print(mins_m)
         pass
-
-    def set_responsible_projects(self):
-        left = self.base_indicator.copy()[['code', 'mins', 'amenity', 'geometry']]
-        left.rename(columns={'mins': 'base_mins', 'amenity': 'base_amenity'}, inplace=True)
-
-        right = self.indicator.copy()[['code', 'mins', 'project', 'amenity']]
-        right.rename(columns={'mins': 'new_mins'}, inplace=True)
-
-        conclusion = left.merge(right, on='code')
-        conclusion['change_mins'] = conclusion['new_mins'] - conclusion['base_mins']
-
-        # in case a amenity is deleted by a project deletion change, it sets it's responsible project
-        def hex_change(row):
-            responsible = None
-            if row['amenity'] != row['base_amenity']:
-                if row['change_mins'] > 0:
-                    # find project that moved or deleted the amenity
-                    deletions = self.deleted_amenities[self.deleted_amenities['change_type'] == 'Delete']
-                    deletions = deletions[deletions['updating'] == row['base_amenity']]
-                    if len(deletions) > 0:
-                        responsible = deletions.iloc[0]['project']
-                        
-                    if not responsible:
-                        modifications = self.amenities[self.amenities['change_type'] == 'Modify']
-                        modifications = modifications[modifications['updating'] == row['base_amenity']]
-                        if len(modifications) > 0:
-                            responsible = modifications.iloc[0]['project']
-            else:
-                if row['change_mins'] > 0:
-                    # find project that updated amenity
-                    modifications = self.amenities[self.amenities['change_type'] == 'Modify']
-                    modifications = modifications[modifications['updating'] == row['base_amenity']]
-                    if len(modifications) > 0:
-                        responsible = modifications.iloc[0]['project']
-            return responsible
-
-        conclusion['responsible'] = conclusion.apply(hex_change, axis=1)
-        self.conclusion = gpd.GeoDataFrame(conclusion, geometry='geometry')
-
-        def responsible_to_project(row):
-            row['project'] = row['responsible']
-            return row
-
-        def forgive_responsible(row):
-            if row['responsible'] != None and not np.isnan(row['responsible']):
-                row['new_mins'] = row['base_mins']
-            return row
-
-        affected_hexs = conclusion[conclusion['responsible'].notna()]
-        affected_hexs = affected_hexs.apply(responsible_to_project, axis=1)
-        conclusion = conclusion.apply(forgive_responsible, axis=1)
-        conclusion = pd.concat([conclusion, affected_hexs])
-        del conclusion['responsible']
-        
-        self.conclusion = gpd.GeoDataFrame(conclusion, geometry='geometry')
 
     def get_color(self, value, vmin, vmax, alpha, cmap, max_alpha=255):
         norm = plt.Normalize(vmin, vmax)
@@ -803,9 +760,8 @@ class Indicator():
         return [int(color[0] * 255), int(color[1] * 255), int(color[2] * 255), int(alpha * max_alpha)]
 
     def compute_histogram(self):
-        # Histogram
+        # Residents histogram
 
-        print('A')
         gdf = self.indicator.reset_index()
 
         if self.bounds:
@@ -813,57 +769,91 @@ class Indicator():
             tmp = pd.DataFrame(index=t.query(gdf['geometry'], predicate='intersects')[0])
             gdf = pd.merge(gdf, tmp, left_index=True, right_index=True)
 
-        histogram_data = gdf[['mins', 'residents']].reset_index(drop=True)
-        print('B')
+        #################################################################################
 
         interval_size = self.interval_size
-        histogram_data['mins'] = histogram_data['mins'].apply(lambda v: min(v, self.vmax) // interval_size * interval_size).astype(int)
-        histogram_data = histogram_data.groupby('mins')
-        histogram_data = histogram_data.sum()
-
-        im = histogram_data['residents'].idxmax()
-        histogram_data.loc[im, 'residents'] = np.ceil(histogram_data.loc[im, 'residents'])
-        histogram_data = histogram_data.round()
-
-        histogram_data = histogram_data.reset_index()
-        histogram_data = histogram_data.rename(columns={'residents': 'value'})
-
-        print('C')
-
         labels_count = int(self.vmax / interval_size) + 1
+
+        labels = [f'{round(self.vmin + i * interval_size)} - {round(self.vmin + (i + 1) * interval_size)}' for i in range(labels_count)]
+        labels[-1] = f'> {round(self.vmin + (labels_count - 1) * interval_size)}'
+
         labels = [{
-            'label': f'{round(self.vmin + i * interval_size)} - {round(self.vmin + (i + 1) * interval_size)}',
+            # 'label': f'{round(self.vmin + i * interval_size)} - {round(self.vmin + (i + 1) * interval_size)}',
+            'label': labels[i],
             'index': i,
-            'mins': self.vmin + i * interval_size,
-            'color': self.get_color(self.vmin + i * interval_size, self.vmin, self.vmax, 1, self.cmap)
+            'group': i,
+            'color': self.get_color(self.vmin + (i + 0.5) * interval_size, self.vmin, self.vmax, 1, self.cmap)
         } for i in range(labels_count)]
-        labels[-1]['label'] = f'> {labels[-1]["mins"]}'
         histogram_labels = pd.DataFrame.from_records(labels)
 
-        print('D')
-        histogram_data = histogram_labels.merge(histogram_data, how='left', on='mins')
-        histogram_data.fillna(0, inplace=True)
-        histogram_data = histogram_data[['label','value','index', 'color']]
-        histogram_data['index'] = histogram_data['index'].astype(int)
-        histogram_data = histogram_data.to_dict(orient='records')
-        print('E')
+        #################################################################################
 
-        histogram = {}
-        histogram['index'] = 0
-        histogram['type'] = 'histogram'
-        histogram['data'] = histogram_data
-        histogram['positive'] = False
-        histogram['name'] = 'Histograma'
-        histogram['unit'] = 'minutos'
-        histogram['unit_short'] = 'min'
-        print('F')
+        res_histogram_data = gdf[['mins', 'residents']].reset_index(drop=True)
 
-        self.secondary_data.append(histogram)
+        res_histogram_data['group'] = (res_histogram_data['mins'] / interval_size).clip(upper=labels_count - 1).astype(int)
+
+        res_histogram_data = res_histogram_data.groupby('group').sum()
+
+        im = res_histogram_data['residents'].idxmax()
+        res_histogram_data.loc[im, 'residents'] = np.ceil(res_histogram_data.loc[im, 'residents'])
+        res_histogram_data = res_histogram_data.round()
+
+        res_histogram_data = res_histogram_data.reset_index().rename(columns={'residents': 'value'})
+
+        res_histogram_data = histogram_labels.merge(res_histogram_data, how='left', on='group')
+
+        res_histogram_data.fillna(0, inplace=True)
+        res_histogram_data = res_histogram_data[['label', 'value', 'index', 'color']]
+        res_histogram_data['index'] = res_histogram_data['index'].astype(int)
+        res_histogram_data = res_histogram_data.to_dict(orient='records')
+
+        res_histogram = {}
+        res_histogram['index'] = 0
+        res_histogram['type'] = 'histogram'
+        res_histogram['data'] = res_histogram_data
+        res_histogram['positive'] = False
+        res_histogram['name'] = 'Histograma personas'
+        res_histogram['unit'] = 'minutos'
+        res_histogram['unit_short'] = 'min'
+        res_histogram['value_unit'] = 'personas'
+        res_histogram['value_unit_short'] = 'pers.'
+
+        self.secondary_data.append(res_histogram)
+
+        # Hexagons histogram
+
+        hex_histogram_data = gdf[['mins']].reset_index(drop=True)
+
+        hex_histogram_data['group'] = (hex_histogram_data['mins'] / interval_size).clip(upper=labels_count - 1).astype(int)
+        
+        hex_histogram_data = hex_histogram_data['group'].value_counts().reset_index().rename(columns={'count': 'value'})
+
+        im = hex_histogram_data['value'].idxmax()
+        hex_histogram_data.loc[im, 'value'] = np.ceil(hex_histogram_data.loc[im, 'value'])
+        hex_histogram_data = hex_histogram_data.round()
+
+        hex_histogram_data = histogram_labels.merge(hex_histogram_data, how='left', on='group')
+        
+        hex_histogram_data.fillna(0, inplace=True)
+        hex_histogram_data = hex_histogram_data[['label', 'value', 'index', 'color']]
+        hex_histogram_data['index'] = hex_histogram_data['index'].astype(int)
+        hex_histogram_data = hex_histogram_data.to_dict(orient='records')
+
+        hex_histogram = {}
+        hex_histogram['index'] = 1
+        hex_histogram['type'] = 'histogram'
+        hex_histogram['data'] = hex_histogram_data
+        hex_histogram['positive'] = False
+        hex_histogram['name'] = 'Histograma hexagonos'
+        hex_histogram['unit'] = 'minutos'
+        hex_histogram['unit_short'] = 'min'
+        hex_histogram['value_unit'] = 'hexágonos'
+        hex_histogram['value_unit_short'] = 'hex'
+
+        self.secondary_data.append(hex_histogram)
 
         # Color labels
         color_labels = labels.copy()
-        for label in color_labels:
-            del label['mins']
 
         legend = {}
         legend['type'] = 'legend'
@@ -876,16 +866,17 @@ class Indicator():
     def compute_differences(self):
         # Project percentual change
         
-        left = self.base_indicator.copy()[['code', 'mins', 'amenity', 'geometry']]
+        left = self.base_indicator.copy()[['code', 'mins', 'bus_stop', 'geometry']]
         left = gpd.GeoDataFrame(left, geometry='geometry')
         left.set_crs(4326, inplace=True)
-        left.rename(columns={'mins': 'base_mins', 'amenity': 'base_amenity'}, inplace=True)
+        left.rename(columns={'mins': 'base_mins', 'bus_stop': 'base_bus_stop'}, inplace=True)
 
-        right = self.indicator.copy()[['code', 'mins', 'project', 'amenity']]
+        right = self.indicator.copy()[['code', 'mins', 'project', 'bus_stop']]
         right.rename(columns={'mins': 'new_mins'}, inplace=True)
 
         conclusion = left.merge(right, on='code')
         conclusion['change_mins'] = conclusion['new_mins'] - conclusion['base_mins']
+
         self.conclusion = gpd.GeoDataFrame(conclusion, geometry='geometry')
         self.conclusion.set_crs(4326, inplace=True)
 
@@ -923,77 +914,61 @@ class Indicator():
         overlay = pd.merge(overlay, hex_area_occupied, how='left', on='code')
         overlay['fraction_in_hex'] = overlay['piece_area'] / overlay['hex_area_occupied']
         overlay['combined_density'] = overlay['fraction_in_hex'] * overlay['neighborhood_density']
-
+        
         print('f')
         overlay = overlay[['code', 'combined_density']].groupby('code').sum().reset_index().rename(columns={'combined_density': 'density'})
-
+        
         print('g')
         max_density = overlay['density'].max()
         overlay['density_multiplier'] = 1.0 - np.power(1.0 - np.log(overlay['density'] + 1) / np.log(max_density + 1), 1.5)
 
         print('h')
         hex_upgrade = pd.merge(hex_upgrade, overlay[['code', 'density_multiplier']], how='left', on='code')
+
         print('j')
 
         if self.bounds:
             t = STRtree([self.bounds])
             tmp = pd.DataFrame(index=t.query(hex_upgrade['geometry'], predicate='intersects')[0])
             hex_upgrade = pd.merge(hex_upgrade, tmp, left_index=True, right_index=True)
-            
-            # this was done only in difference computations but this made the outline to appear only when the 2nd
-            # scenario was computed instead of when the actual scenario was.
-            # self.bounds_border = hex_upgrade.copy()['geometry'].union_all(method='coverage')
 
-        # in case a amenity is deleted by a project deletion change, it sets it's responsible project
+        # in case a busstop is deleted by a project deletion change, it sets it's responsible project
         def hex_change(row):
-            responsible = None
-            if row['amenity'] != row['base_amenity']:
+            responsible = row['project']
+            if row['bus_stop'] != row['base_bus_stop']:
                 if row['change_mins'] > 0:
-                    # find project that moved or deleted the amenity
-                    deletions = self.amenities[self.amenities['change_type'] == 'Delete']
-                    deletions = deletions[deletions['updating'] == row['base_amenity']]
+                    # find project that moved or deleted the bus stop
+                    deletions = self.bus_stops[self.bus_stops['change_type'] == 'Delete']
+                    deletions = deletions[deletions['updating'] == row['base_bus_stop']]
                     if len(deletions) > 0:
                         responsible = deletions.iloc[0]['project']
                         
                     if not responsible:
-                        modifications = self.amenities[self.amenities['change_type'] == 'Modify']
-                        modifications = modifications[modifications['updating'] == row['base_amenity']]
+                        modifications = self.bus_stops[self.bus_stops['change_type'] == 'Modify']
+                        modifications = modifications[modifications['updating'] == row['base_bus_stop']]
                         if len(modifications) > 0:
                             responsible = modifications.iloc[0]['project']
+                else:
+                    responsible = row['project']
             else:
-                if row['change_mins'] > 0:
-                    # find project that updated amenity
-                    modifications = self.amenities[self.amenities['change_type'] == 'Modify']
-                    modifications = modifications[modifications['updating'] == row['base_amenity']]
+                if row['change_mins'] != 0:
+                    # find project that updated bus stop
+                    modifications = self.bus_stops[self.bus_stops['change_type'] == 'Modify']
+                    modifications = modifications[modifications['updating'] == row['base_bus_stop']]
                     if len(modifications) > 0:
                         responsible = modifications.iloc[0]['project']
             return responsible
 
         hex_upgrade['responsible'] = hex_upgrade.apply(hex_change, axis=1)
 
-        def responsible_to_project(row):
-            row['project'] = row['responsible']
-            return row
-
-        def forgive_responsible(row):
-            if row['responsible'] != None and not np.isnan(row['responsible']):
-                row['new_mins'] = row['base_mins']
-            return row
-
-        affected_hexs = hex_upgrade[hex_upgrade['responsible'].notna()]
-        affected_hexs = affected_hexs.apply(responsible_to_project, axis=1)
-        hex_upgrade = hex_upgrade.apply(forgive_responsible, axis=1)
-        hex_upgrade = pd.concat([hex_upgrade, affected_hexs])
+        hex_upgrade['project'] = hex_upgrade['responsible']
         del hex_upgrade['responsible']
 
-        neutral_mins = hex_upgrade[['code', 'base_mins']]
-        neutral_mins = neutral_mins.groupby('code')
-        neutral_mins = neutral_mins.first()
-        base_mins = neutral_mins['base_mins'].sum()
+        base_mins = hex_upgrade['base_mins'].sum()
 
-        # base_mins = hex_upgrade['base_mins'].sum()
-
+        print('before', hex_upgrade['new_mins'].sum())
         hex_upgrade['new_mins'] = (hex_upgrade['new_mins'] - hex_upgrade['base_mins']) * hex_upgrade['density_multiplier'] + hex_upgrade['base_mins']
+        print('after', hex_upgrade['new_mins'].sum())
 
         pro_upgrade = hex_upgrade[['project', 'new_mins', 'base_mins']].reset_index(drop=True)
         pro_upgrade = pro_upgrade.groupby('project', dropna=False)
@@ -1002,10 +977,14 @@ class Indicator():
         pro_upgrade['other_new_mins'] = pro_upgrade.apply(lambda row: pro_upgrade[pro_upgrade['project'] != row['project']]['new_mins'].sum(), axis=1)
         pro_upgrade['other_base_mins'] = pro_upgrade.apply(lambda row: pro_upgrade[pro_upgrade['project'] != row['project']]['base_mins'].sum(), axis=1)
         pro_upgrade.dropna(subset=['project'],inplace=True)
-        pro_upgrade['percentage'] = pro_upgrade.apply(lambda row: 100.0 * ((base_mins / (row['new_mins'] + row['other_base_mins'])) - 1.0), axis=1)
-        pro_upgrade.apply(lambda row: print(row['new_mins'] + row['other_new_mins']), axis=1)
+        # pro_upgrade['percentage'] = pro_upgrade.apply(lambda row: 100.0 * ((base_mins / (row['new_mins'] + row['other_base_mins'])) - 1.0), axis=1)
+        
+        for index, row in pro_upgrade.iterrows():
+            print(f'100.0 * (1.0 - ({row["new_mins"]} + {row["other_base_mins"]}) / ({row["base_mins"]} + {row["other_base_mins"]}))')
 
-        df_list = pd.DataFrame({'project': self.counting_projects})
+        pro_upgrade['percentage'] = pro_upgrade.apply(lambda row: 100.0 * (1.0 - (row['new_mins'] + row['other_base_mins']) / (row['base_mins'] + row['other_base_mins'])), axis=1)
+
+        df_list = pd.DataFrame({'project': list(self.counting_projects)})
         result = pd.merge(df_list, pro_upgrade, on='project', how='left')
         result['percentage'] = round(result['percentage'].fillna(0), 2)
         result = result[['project', 'percentage']]
@@ -1022,49 +1001,9 @@ class Indicator():
         improvement_percentage['unit'] = '%'
         improvement_percentage['unit_short'] = '%'
 
+        print(improvement_percentage)
+
         self.secondary_data.append(improvement_percentage)
-
-        # # Project flat change
-        
-        # upgrade = conclusion.copy()
-        
-        # if self.bounds:
-        #     upgrade = upgrade[upgrade['geometry'].apply(lambda g: intersects(self.bounds, g))]
-        #     upgrade = upgrade[~upgrade['geometry'].is_empty]
-        #     self.bounds_border = upgrade.copy()['geometry'].union_all(method='coverage')
-
-        # cells_to_divide_in = len(upgrade)
-        # total_base_mins = upgrade['base_mins'].sum()
-
-        # # upgrade.dropna(subset=['project'], inplace=True)
-        # # upgrade['project'] = upgrade['project'].astype(int)
-        # upgrade = upgrade[['project', 'new_mins', 'base_mins']].reset_index(drop=True)
-        # upgrade = upgrade.groupby('project')
-        # upgrade = upgrade.sum()
-        # upgrade = upgrade.reset_index()
-        # upgrade['change_mins'] = upgrade['new_mins'] - upgrade['base_mins']
-        # upgrade['percentage'] = -1.0 * upgrade['change_mins'] * (100.0 / upgrade['base_mins'])
-        # upgrade = upgrade[['project', 'percentage']].reset_index(drop=True)
-
-        # temp = upgrade.copy()
-        # df_list = pd.DataFrame({'project': self.counting_projects})
-        # result = pd.merge(df_list, temp, on='project', how='left')
-        # result['percentage'] = round(result['percentage'].fillna(0), 2)
-        # result = result[['project', 'percentage']]
-        # result['project_name'] = result['project'].apply(lambda project: self.projects_name[project])
-        # result.rename(columns={'project_name': 'label', 'percentage': 'value'}, inplace=True)
-        # improvement_flat_data = result.to_dict(orient='records')
-
-        # improvement_flat = {}
-        # improvement_flat['index'] = 2
-        # improvement_flat['type'] = 'project_change'
-        # improvement_flat['data'] = improvement_flat_data
-        # improvement_flat['positive'] = True
-        # improvement_flat['name'] = 'Mejora porcentual'
-        # improvement_flat['unit'] = '%'
-        # improvement_flat['unit_short'] = '%'
-
-        # self.secondary_data.append(improvement_flat)
         pass
 
     def set_border(self, border_type):
@@ -1090,7 +1029,7 @@ class Indicator():
         vmax = self.vmax
         gdf['color'] = gdf.apply(lambda v: self.get_color(v['value'], vmin, vmax, 1 if v['residents'] > 0 else 0.25, self.cmap, 200), axis=1)
 
-        gdf = gdf[['code', 'value', 'residents', 'color', 'display_text', 'project', 'amenity', 'geometry']]
+        gdf = gdf[['code', 'value', 'residents', 'color', 'display_text', 'project', 'bus_stop', 'geometry']]
         # gdf.rename({'code': 'hex'}, inplace=True)
 
         if self.geometry:
@@ -1118,11 +1057,12 @@ class Indicator():
         print('exporting data')
 
         if self.base:
-            output_path = f'/usr/src/app/shared/zone_{self.zone}/amenities_proximity/base{"_geo" if self.geo_output else ""}.json'
+            output_path = f'/usr/src/app/shared/zone_{self.zone}/bus_stops_proximity/base{"_geo" if self.geo_output else ""}.json'
         else:
-            output_path = f'/usr/src/app/shared/zone_{self.zone}/amenities_proximity/result{self.result}{"_geo" if self.geo_output else ""}.json'
+            output_path = f'/usr/src/app/shared/zone_{self.zone}/bus_stops_proximity/result{self.result}{"_geo" if self.geo_output else ""}.json'
 
-        self.indicator.replace({np.nan: None, np.inf: 999, -np.inf: 999}, inplace=True)
+        self.indicator.replace({np.nan: None}, inplace=True)
+
         if self.geo_output:
             df_json_str = self.indicator.to_json(indent=4)
             df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
@@ -1168,26 +1108,28 @@ class Indicator():
     def execute(self):
         try:
             try:
+                start = time.perf_counter()
                 self.load_env_variables()
+                print(f'load env variables took {time.perf_counter() - start:.2f}s')
             except Exception as e:
                 print('exception in load_env_variables:',e)
                 raise e
             
             try:
+                start = time.perf_counter()
                 self.load_data()
+                print(f'load data took {time.perf_counter() - start:.2f}s')
             except Exception as e:
                 print('exception in load_data:',e)
                 raise e
 
             try:
                 if self.indicator.empty:
+                    start = time.perf_counter()
                     self.execute_process()
+                    print(f'execute process took {time.perf_counter() - start:.2f}s')
 
                 self.set_border('box')
-
-                # if not self.base and len(self.projects) > 0 and not self.base_indicator.empty:
-                    # self.set_responsible_projects()
-
                 self.compute_histogram()
 
                 if not self.base and len(self.projects) > 0 and not self.base_indicator.empty:
@@ -1197,8 +1139,10 @@ class Indicator():
                 raise e
                 
             try:
+                start = time.perf_counter()
                 self.adjust_backend_format()
                 self.export_data()
+                print(f'export data took {time.perf_counter() - start:.2f}s')
             except Exception as e:
                 print('exception in export_data:',e)
                 raise e

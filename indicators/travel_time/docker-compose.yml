@@ -9,7 +9,6 @@ services:
     volumes:
       # - ../../shared:/usr/src/app/shared
       - clbb-modules-cache:/usr/src/app/shared
-      - ./assets:/usr/src/app/assets
 
 volumes:
   clbb-modules-cache:

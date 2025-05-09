@@ -10,10 +10,12 @@ class Processing:
         self.load_env_variables()
         self.props_per_resource = {
             'node': ['id', 'osm_id', 'wkb'],
-            'street': ['id', 'name', 'osm_id', 'osm_src', 'osm_dst', 'src', 'dst', 'max_speed', 'lanes', 'length', 'wkb'],
+            'street': ['id', 'name', 'osm_id', 'osm_src', 'osm_dst', 'src', 'dst', 'max_speed', 'lanes', 'one_way', 'reversed', 'drive', 'walk', 'length', 'wkb'],
             'busstop': ['id', 'name', 'bus_stop_type', 'wkb'],
             'landuse': ['id', 'use', 'wkb'],
-            'neighborhood': ['id', 'name', 'residents', 'wkb']
+            'greenarea': ['id', 'name', 'public_space_type', 'wkb'],
+            'neighborhood': ['id', 'name', 'residents', 'wkb'],
+            'block': ['id', 'density', 'wkb']
         }
         pass
     

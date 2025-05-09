@@ -5,9 +5,8 @@ import requests
 import os
 import json
 import matplotlib.pyplot as plt
-from shapely import wkb, STRtree, unary_union
+from shapely import wkb, intersects, STRtree
 from shapely.geometry import Polygon, Point, box
-from shapely.prepared import prep
 
 from unicodedata import normalize
 import h3
@@ -18,7 +17,7 @@ class Indicator():
         self.init_time = time.time()
         self.data = None
         self.indicator = pd.DataFrame()
-        self.overlay_gdf = pd.DataFrame()
+        self.gdf_overlay = pd.DataFrame()
         self.bounds = None
         self.bounds_border = None
         self.landuse_id = None
@@ -32,23 +31,19 @@ class Indicator():
     def load_env_variables(self):
         self.server_address = os.getenv('server_address', 'http://localhost:8000')
         self.scenario = int(os.getenv('scenario', -1))
-        self.user = int(os.getenv('user', -1))
         self.result = int(os.getenv('result', -1))
         self.zone = int(os.getenv('zone', -1))
 
         if self.scenario == -1:
             raise Exception({'error': 'scenario not provided'})
-
-        if self.user == -1:
-            raise Exception({'error': 'user not provided'})
         
         if self.result == -1:
             raise Exception({'error': 'result not provided'})
         
-        if self.zone == -1: 
+        if self.zone == -1:
             raise Exception({'error': 'zone not provided'})
         
-        self.resolution = int(os.getenv('resolution', 10))
+        self.resolution = int(os.getenv('resolution', 1))
         self.x_spacing = int(os.getenv('x_spacing', 50))
         self.y_spacing = int(os.getenv('y_spacing', 50))
         self.geo_input = os.getenv('geo_input', 'False') == 'True'
@@ -66,13 +61,7 @@ class Indicator():
         import matplotlib.colors
 
         cvals  = [0, 0.25, 0.5, 0.75, 1]
-        colors = [
-            "#3C1877",
-            "#5F28B8",
-            "#5A5CD3",
-            "#53D1E4",
-            "#80FFDB"
-        ]
+        colors = ["#3C1877","#5F28B8","#5A5CD3", "#53D1E4", "#80FFDB"]
 
         norm=plt.Normalize(min(cvals),max(cvals))
         tuples = list(zip(map(norm,cvals), colors))
@@ -129,143 +118,46 @@ class Indicator():
             'habitacional': '#ff7e00',
             'industria': '#db01de',
         }
-    
-    def load_resource(self, resource, environment, user, fields='', query_params='', update=False):
-        parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
-        if self.cache and os.path.exists(parquet_path):
-            print(parquet_path, 'does exist')
-            try:
-                data_gdf = gpd.read_parquet(parquet_path)
-                data_gdf['updating'] = None
-                data_gdf['project'] = None
-                data_gdf['change_type'] = 'Create'
-                data_gdf.set_crs(4326, inplace=True)
-                data_gdf.set_index('id', inplace=True)
-                
-                endpoint = f'{self.server_address}/api/{resource}/data/?environment={environment}&user={user}&types=project,changes&fields=id,{fields},scenario,project,data_source,updating,change_type,source_type,wkb&{query_params}'
-                response = requests.get(endpoint)
-                data = response.json()
-            except Exception as e:
-                print(f"Error al leer el archivo {parquet_path}: {str(e)}")
-        else:
-            print(parquet_path, 'doesnt exist')
-            endpoint = f'{self.server_address}/api/{resource}/data/?environment={environment}&user={user}&types=base,project,changes&fields=id,{fields},scenario,project,data_source,updating,change_type,source_type,wkb&{query_params}'
-            response = requests.get(endpoint)
-            data = response.json()
 
-            base_data = next((item['data'] for item in data if item['type'] == 'base'), [])
-
-            base_df = pd.DataFrame(base_data)
-            base_df['geometry'] = base_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-            del base_df['wkb']
-            data_gdf = gpd.GeoDataFrame(base_df)
-            data_gdf.set_crs(4326, inplace=True)
-            data_gdf.set_index('id', inplace=True)
-
-        base_data_gdf = data_gdf.copy()
-        deleted_data_gdf = pd.DataFrame()
-
-        if not self.base:
-            project_data = next((item['data'] for item in data if item['type'] == 'project'), [])
-            changes_data = next((item['data'] for item in data if item['type'] == 'changes'), [])
-
-            for project_entry in project_data:
-                if project_entry['project'] not in self.projects:
-                    continue
-                
-                delta_df = pd.DataFrame.from_records(project_entry['data'])
-                if not delta_df.empty:
-                    if project_entry['project'] not in self.counting_projects:
-                        self.counting_projects.add(project_entry['project'])
-
-                    delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-                    del delta_df['wkb']
-                    delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
-                    delta_gdf.set_crs(4326, inplace=True)
-                    delta_gdf.set_index('id', inplace=True)
-                    delta_gdf['project'] = project_entry['project']
-
-                    delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
-                    delete_gdf.set_crs(4326, inplace=True)
-                    if not delete_gdf.empty:
-                        deleted_data_gdf = pd.concat([deleted_data_gdf, delete_gdf])
-                    ids_to_delete = set(delete_gdf['updating'])
-                    data_gdf = data_gdf.loc[~data_gdf.index.isin(ids_to_delete), :]
-
-                    create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
-                    create_gdf.set_crs(4326, inplace=True)
-
-                    modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
-                    modify_gdf.set_crs(4326, inplace=True)
-
-                    if update:
-                        data_gdf.update(modify_gdf.set_index('updating', drop=False))
-                        data_gdf = gpd.GeoDataFrame(pd.concat([data_gdf, create_gdf]), geometry='geometry', crs=data_gdf.crs)
-                    else:
-                        data_gdf = gpd.GeoDataFrame(pd.concat([data_gdf, create_gdf, modify_gdf]), geometry='geometry', crs=data_gdf.crs)
-
-            for scenario_entry in changes_data:
-                for project_entry in scenario_entry['data']:
-                    if project_entry['project'] not in self.projects:
-                        continue
-                    
-                    delta_df = pd.DataFrame.from_records(project_entry['data'])
-                    if not delta_df.empty:
-                        if project_entry['project'] not in self.counting_projects:
-                            self.counting_projects.add(project_entry['project'])
-
-                        delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-                        del delta_df['wkb']
-                        delta_gdf = gpd.GeoDataFrame(delta_df)
-                        delta_gdf.set_crs(4326, inplace=True)
-                        delta_gdf.set_index('id', inplace=True)
-                        delta_gdf['project'] = project_entry['project']
-
-                        delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
-                        delete_gdf.set_crs(4326, inplace=True)
-                        if not delete_gdf.empty:
-                            deleted_data_gdf = pd.concat([deleted_data_gdf, delete_gdf])
-                        ids_to_delete = set(delete_gdf['updating'])
-                        data_gdf = data_gdf.loc[~data_gdf.index.isin(ids_to_delete), :]
-
-                        create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
-                        create_gdf.set_crs(4326, inplace=True)
-
-                        modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
-                        modify_gdf.set_crs(4326, inplace=True)
-
-                        if update:
-                            data_gdf.update(modify_gdf.set_index('updating', drop=False))
-                            data_gdf = gpd.GeoDataFrame(pd.concat([data_gdf, create_gdf]), geometry='geometry', crs=data_gdf.crs)
-                        else:
-                            data_gdf = gpd.GeoDataFrame(pd.concat([data_gdf, create_gdf, modify_gdf]), geometry='geometry', crs=data_gdf.crs)
-
-        data_gdf.reset_index(inplace=True)
-        if not deleted_data_gdf.empty:
-            deleted_data_gdf = gpd.GeoDataFrame(deleted_data_gdf, geometry='geometry', crs=4326)
-        
-        return data_gdf, base_data_gdf, deleted_data_gdf
-
-    def load_item(self, item, id):
-        endpoint = f'{self.server_address}/api/{item}/{id}'
-        response = requests.get(endpoint)
-        data = response.json()
-        return data
+        # self.land_use_colors = {
+        #     'administracion publica y defensa': '#9d00dc',
+        #     'areas verdes': '#05a056',
+        #     'bienes comunes': '#9d00dc',
+        #     'bodega y almacenaje': '#6273b9',
+        #     'comercio': '#ffff24',
+        #     'culto': '#6e0104',
+        #     'deporte y recreacion': '#0077dd',
+        #     'ecosistemas acuaticos': '#05a056',
+        #     'educacion y cultura': '#6273b9',
+        #     'estacionamiento': '#ffff24',
+        #     'Habitacional': '#ff7e00',
+        #     'Habitacional informal': '#ff7e00',
+        #     'hotel': '#ffff24',
+        #     'industria': '#db01de',
+        #     'oficina': '#ffff24',
+        #     'otro': '#6e0104',
+        #     'parques naturales': '#05a056',
+        #     'salud': '#6273b9',
+        #     'sitio eriazo': '#6e0104',
+        #     'transporte': '#db01de'
+        # }
     
     def load_data(self):
         print('loading data')
 
-        scenario = self.load_item('scenario', self.scenario)
-        environment_id = scenario['environment']
-        user = self.load_item('user', self.user)
+        scenario = self.load_scenario()
 
         imported_projects = [p['id'] for p in scenario['imported_projects']]
         self.projects = [p for p in self.projects if p != 3 and p in imported_projects]
 
         self.projects_name = {p['id']: p['name'] for p in scenario['imported_projects']}
-        self.counting_projects = set()
+        self.counting_projects = []
 
         print(self.projects)
+        
+        self.land_uses, self.base_land_uses = self.load_land_uses(include_base=True)
+        print('base land_uses:', len(self.base_land_uses))
+        print('current land_uses:', len(self.land_uses))
 
         if not self.base:
             indicator, landuse_id, resume = self.load_base_indicator()
@@ -277,24 +169,22 @@ class Indicator():
                 self.indicator = self.base_indicator
                 # self.landuse_id = self.base_landuse_id
                 # self.secondary_data = self.base_secondary_data
+                return
 
-        land_uses, base_land_uses, deleted_land_uses = self.load_resource('landuse', environment_id, user['id'], 'use', '')
-        self.land_uses = land_uses
-        self.base_land_uses = base_land_uses
-        self.deleted_land_uses = deleted_land_uses
-        print('base land_uses:', len(self.base_land_uses))
-        print('current land_uses:', len(self.land_uses))
+        # I'm commenting this because there's no tracking of changes on the
+        # projects this result was made for. So if there's a change and you
+        # ask for this result to be computed again, it will set to the same.
+
+        # cached_indicator = self.load_indicator()
+        # if not cached_indicator.empty:
+        #     self.indicator = cached_indicator
+        #     return
 
         self.area = self.load_area_of_interest()
         print('area:', len(self.area))
 
-        # try:
-        #     self.grid_points = self.load_grid_points()
-        # except:
-
-        geometry = unary_union(pd.concat([self.area.to_crs(32718), self.land_uses.to_crs(32718)]).geometry)
-        self.grid_points = self.get_grid_points_from_area(geometry, self.x_spacing, self.y_spacing).set_crs(32718).to_crs(4326)
-        print('grid_points:', len(self.grid_points))
+        self.h3_cells = self.load_h3_cells()
+        print('h3_cells:', len(self.h3_cells))
         pass
 
     def load_scenario(self):
@@ -336,33 +226,180 @@ class Indicator():
         base_indicator.rename(columns={'value': 'diversity'}, inplace=True)
         return base_indicator, landuse_id, resume
 
+    def load_land_uses(self, include_base=False):
+        if self.cache:
+            parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/landuse.parquet'
+
+            if not os.path.exists(parquet_path):
+                raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
+
+            try:
+                data_gdf = gpd.read_parquet(parquet_path)
+                data_gdf.set_crs(4326, inplace=True)
+            except Exception as e:
+                print(f"Error al leer el archivo {parquet_path}: {str(e)}")
+        else:
+            endpoint = f'{self.server_address}/api/landuse/?fields=use'
+            response = requests.get(endpoint)
+            data = response.json()
+
+            data_df = pd.DataFrame.from_records(data)
+            data_df['geometry'] = data_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+            del data_df['wkb']
+            data_gdf = gpd.GeoDataFrame(data_df)
+            data_gdf.set_geometry('geometry', inplace=True)
+            data_gdf.set_crs(4326, inplace=True)
+
+        if include_base:
+            base_data = data_gdf.copy()
+
+        if not self.base:
+            for current_project in self.projects:
+                endpoint = f'{self.server_address}/api/landuse/?scenario=None&project={current_project}&fields=id,use,scenario,project,data_source,updating,change_type,source_type,wkb'
+                response = requests.get(endpoint)
+                data = response.json()
+                delta_df = pd.DataFrame.from_records(data)
+
+                if len(delta_df):
+                    self.counting_projects.append(current_project)
+
+                    delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+                    del delta_df['wkb']
+                    delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
+                    delta_gdf.set_crs(4326, inplace=True)
+
+                    modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+                    ids_to_modify = list(modify_gdf['updating'])
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+                    data_gdf = pd.concat([data_gdf, modify_gdf])
+
+                    delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+                    ids_to_delete = list(delete_gdf['updating']) 
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+
+                    create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+                    data_gdf = pd.concat([data_gdf, create_gdf])
+                    
+            for current_project in self.projects:
+                endpoint = f'{self.server_address}/api/landuse/?scenario={self.scenario}&project={current_project}&fields=id,use,scenario,project,data_source,updating,change_type,source_type,wkb'
+                response = requests.get(endpoint)
+                data = response.json()
+                delta_df = pd.DataFrame.from_records(data)
+
+                if len(delta_df):
+                    self.counting_projects.append(current_project)
+
+                    delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+                    del delta_df['wkb']
+                    delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
+                    delta_gdf.set_crs(4326, inplace=True)
+
+                    modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
+                    ids_to_modify = list(modify_gdf['updating'])
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_modify)]
+                    data_gdf = pd.concat([data_gdf, modify_gdf])
+
+                    delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
+                    ids_to_delete = list(delete_gdf['updating']) 
+                    data_gdf = data_gdf[data_gdf['id'].apply(lambda id: id not in ids_to_delete)]
+
+                    create_gdf = delta_gdf[delta_gdf['change_type'] == 'Create']
+                    data_gdf = pd.concat([data_gdf, create_gdf])
+
+        if include_base:
+            return data_gdf, base_data
+
+        return data_gdf
+    
     def load_area_of_interest(self):
+        area_of_interest = None
         endpoint = f'{self.server_address}/api/zone/{self.zone}/'
         response = requests.get(endpoint)
         data = response.json()
 
-        area_of_interest = gpd.GeoDataFrame.from_features([data])
+        properties = data.copy()
+        properties['object_type'] = properties['properties']['object_type']
+        if properties.get('properties'):
+            del properties['properties']
+        if properties.get('wkb'):
+            del properties['wkb']
+        if properties.get('geometry'):
+            del properties['geometry']
+
+        geojson = {
+            'properties': properties,
+            'geometry': data['geometry'],
+        }
+
+        geojson_str = json.dumps(geojson, ensure_ascii=False)
+        area_of_interest = gpd.read_file(geojson_str)
         area_of_interest = area_of_interest.set_crs(4326)
+
         return area_of_interest
     
-    def load_grid_points(self):
-        grid_points = None
+    def load_h3_cells(self):
+        h3_cells = None
         
-        input_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}{"_geo" if self.geo_input else ""}.json'
-        print(f'opening path {input_path}')
-        if os.path.exists(input_path):
+        input_path = f'/usr/src/app/shared/zone_{self.zone}/h3_cells/resolution_{self.resolution}{"_geo" if self.geo_input else ""}.json'
+        if os.path.exists(input_path) and len(self.projects) == 0:
+            print(f'opening path {input_path}')
             with open(input_path, "r") as file:
-                grid_points_str = file.read()
+                h3_cells_str = file.read()
 
-            grid_points_json = json.loads(grid_points_str)
-            grid_points = pd.DataFrame.from_records(grid_points_json)
-            grid_points_geometry = grid_points['wkb'].apply(lambda g: wkb.loads(bytes.fromhex(g)))
-            grid_points = gpd.GeoDataFrame(grid_points, geometry=grid_points_geometry)
-            grid_points = grid_points.set_crs(4326)
+            h3_cells_json = json.loads(h3_cells_str)
+            h3_cells = pd.DataFrame.from_records(h3_cells_json)
+            h3_cells['geometry'] = h3_cells['wkb'].apply(lambda g: wkb.loads(bytes.fromhex(g)))
+            h3_cells = gpd.GeoDataFrame(h3_cells, geometry='geometry')
+            h3_cells = h3_cells.set_crs(4326)
+
+            # h3_cells.to_crs(32718, inplace=True)
+            # h3_cells['area_hex'] = h3_cells.area
+            # h3_cells.to_crs(4326, inplace=True)
+            print('cached h3_cells:', len(h3_cells))
         else:
-            raise Exception({'error': 'grid_points file not found'})
+            print('generating h3_cells')
+            h3_cells = None
 
-        return grid_points
+            x_spacing = 50
+            y_spacing = 50
+            both_gdf = gpd.GeoDataFrame(pd.concat([self.area, self.land_uses]), geometry='geometry')
+            grid_points = self.make_grid_points_gdf(both_gdf, x_spacing, y_spacing)
+            
+            t = STRtree(both_gdf['geometry'])
+            tmp = pd.DataFrame(index=t.query(grid_points['geometry'], predicate='intersects')[0])
+            grid_points = pd.merge(grid_points, tmp, left_index=True, right_index=True)
+            
+            grid_points['code'] = grid_points.apply(lambda p: h3.latlng_to_cell(p.geometry.y, p.geometry.x, self.resolution), 1)
+            h3_cells = grid_points[['code']].drop_duplicates().reset_index(drop=True)
+
+            # Crear una nueva columna en el DataFrame con la geometría de cada hexágono
+            h3_cells['geometry'] = h3_cells['code'].apply(lambda code: self.h3_to_polygon(code))
+
+            # Convertir el DataFrame en un GeoDataFrame
+            h3_cells = gpd.GeoDataFrame(h3_cells, geometry='geometry')
+            h3_cells.set_crs(4326, inplace=True)
+
+            h3_cells.to_crs(32718, inplace=True)
+            h3_cells['area_hex'] = h3_cells.area
+            h3_cells.to_crs(4326, inplace=True)
+
+            h3_cells_to_save = h3_cells.copy()
+            h3_cells_to_save['wkb'] = h3_cells_to_save['geometry'].apply(lambda g: g.wkb.hex())
+            del h3_cells_to_save['geometry']
+            h3_cells_to_save = h3_cells_to_save.to_dict(orient='records')
+            h3_cells_to_save_str = json.dumps(h3_cells_to_save, indent=4)
+
+            if len(self.projects) == 0 and not os.path.exists(input_path):
+                output_path = input_path
+                output_dir = os.path.dirname(output_path)
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                with open(output_path, "w") as file:
+                    file.write(h3_cells_to_save_str)
+
+                print('generated h3_cells:', len(h3_cells))
+
+        return h3_cells
 
     def make_grid_points_gdf(self, gdf: gpd.GeoDataFrame, x_spacing, y_spacing):
         gdf = gdf.copy()
@@ -381,19 +418,6 @@ class Indicator():
 
         pointdf.to_crs('4326', inplace=True)
         return pointdf
-
-    def get_grid_points_from_area(self, geometry, x_spacing: int, y_spacing: int) -> gpd.GeoDataFrame:
-        latmin, lonmin, latmax, lonmax = geometry.bounds
-        prep_geometry = prep(geometry)
-
-        points = []
-        for lat in np.arange(latmin, latmax, x_spacing):
-            for lon in np.arange(lonmin, lonmax, y_spacing):
-                points.append(Point((round(lat,4), round(lon,4))))
-
-        points_inside = gpd.GeoDataFrame(geometry=list(filter(prep_geometry.contains, points)))
-        points_inside['id'] = points_inside.index
-        return points_inside
     
     # Función para convertir código H3 a un polígono de Shapely
     def h3_to_polygon(self, hex_code):
@@ -403,44 +427,37 @@ class Indicator():
     
     ############################################################
     # Methods
-    
     def execute_process(self):
         print('computing indicator')
 
-        grid_points = self.grid_points
-        grid_points['code'] = grid_points.to_crs(4326).geometry.apply(lambda p: h3.latlng_to_cell(p.y, p.x, self.resolution))
-        
-        h3_cells = grid_points[['code']].drop_duplicates('code').reset_index(drop=True)
-        h3_cells['geometry'] = h3_cells['code'].apply(self.h3_to_polygon)
-        h3_cells = gpd.GeoDataFrame(h3_cells, geometry='geometry', crs=4326)
+        ########################################################
 
-        self.h3_cells = h3_cells
-
+        h3_cells = self.h3_cells
         land_uses = self.land_uses
 
         ########################################################
 
-        overlay_gdf = gpd.overlay(h3_cells, land_uses, how='intersection', keep_geom_type=False)
+        gdf_overlay = gpd.overlay(h3_cells, land_uses, how='intersection', keep_geom_type=False)
 
         ########################################################
         print('#1')
 
-        overlay_gdf['area_interseccion'] = overlay_gdf.to_crs(32718).area
+        gdf_overlay['area_interseccion'] = gdf_overlay.to_crs(32718).area
 
         # for computing from here secondary data
-        self.overlay = overlay_gdf
+        self.gdf_overlay = gdf_overlay
 
         ########################################################
         
         # mapping_df...
-        # overlay_gdf = pd.merge(overlay_gdf, mapping_df, how='left', left_on='use', right_index=True)
-        # overlay_gdf = gpd.GeoDataFrame(overlay_gdf, geometry='geometry')
+        # gdf_overlay = pd.merge(gdf_overlay, mapping_df, how='left', left_on='use', right_index=True)
+        # gdf_overlay = gpd.GeoDataFrame(gdf_overlay, geometry='geometry')
 
         ########################################################
         print('#2')
 
-        gdf_area_by_use_per_hex = overlay_gdf.groupby(['code', 'use']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_by_use'})
-        gdf_area_by_hex = overlay_gdf.groupby(['code']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_used_by_hex'})
+        gdf_area_by_use_per_hex = gdf_overlay.groupby(['code', 'use']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_by_use'})
+        gdf_area_by_hex = gdf_overlay.groupby(['code']).agg({'area_interseccion': 'sum'}).reset_index().rename(columns={'area_interseccion': 'area_used_by_hex'})
         gdf_area = pd.merge(gdf_area_by_hex, gdf_area_by_use_per_hex, on='code', how='left')
 
         ########################################################
@@ -458,8 +475,8 @@ class Indicator():
         ########################################################
         print('#4')
 
-        gdf_area['info_by_use'] = -1 * gdf_area['fraction_by_use'] * np.log2(gdf_area['fraction_by_use'])
-        gdf_area.loc[gdf_area['fraction_by_use'] == 1, 'info_by_use'] = 0
+        gdf_area['info_by_use'] = -1*gdf_area['fraction_by_use']*np.log2(gdf_area['fraction_by_use'])
+        gdf_area.loc[gdf_area['fraction_by_use']==1, 'info_by_use'] = 0
 
         ########################################################
         print('#5')
@@ -491,6 +508,15 @@ class Indicator():
         ########################################################
         print('#9')
 
+        gdf_diversity.drop(columns=['area_hex'], inplace=True)
+
+        ########################################################
+        print('#10')
+
+        gdf_diversity['name'] = f'h3-{self.resolution}'
+        gdf_diversity['dist_type'] = 'h3'
+        gdf_diversity['level'] = 10
+
         self.indicator = gdf_diversity
         pass
     
@@ -503,6 +529,7 @@ class Indicator():
             t = STRtree([self.bounds])
             tmp = pd.DataFrame(index=t.query(gdf['geometry'], predicate='intersects')[0])
             gdf = pd.merge(gdf, tmp, left_index=True, right_index=True)
+
             gdf = gpd.overlay(gdf, gpd.GeoDataFrame(geometry=[self.bounds]), how='intersection', keep_geom_type=False)
         
         gdf['area'] = gdf['geometry'].area
@@ -519,7 +546,7 @@ class Indicator():
         total_area = gdf_area_by_use['area_by_use'].sum()
 
         gdf_area_by_use['percentage'] = 100.0 * gdf_area_by_use['area_by_use'] / total_area
-        gdf_area_by_use['percentage'] = round(gdf_area_by_use['percentage'], 1)
+        gdf_area_by_use['percentage'] = round(gdf_area_by_use['percentage'], 4)
         del gdf_area_by_use['area_by_use']
         gdf_area_by_use.sort_values(by='percentage', inplace=True, ascending=False)
         gdf_area_by_use.rename(columns={'new_use': 'label', 'percentage': 'value'}, inplace=True)
@@ -528,17 +555,88 @@ class Indicator():
 
         print(total_percentage_data)
 
-        self.secondary_data.append({
-            'index': 1,
-            'type': 'pie_chart',
-            'data': total_percentage_data,
-            'name': 'Usos de suelo',
-            'unit': '%',
-            'unit_short': '%'
-        })
+        total_percentage = {}
+        total_percentage['index'] = 0
+        total_percentage['type'] = 'pie_chart'
+        total_percentage['data'] = total_percentage_data
+        total_percentage['positive'] = False
+        total_percentage['name'] = 'Usos de suelo'
+        total_percentage['unit'] = '%'
+        total_percentage['unit_short'] = '%'
+
+        self.secondary_data.append(total_percentage)
         pass
 
     def compute_differences(self):
+    #     mapping_df = pd.DataFrame(index=self.mapping.keys(), data=self.mapping.values()).rename(columns={0: 'new_use'})
+    #     t = STRtree([self.bounds])
+
+    #     def simplify_string(s: str):
+    #         trans_tab = dict.fromkeys(map(ord, u'\u0301\u0308'), None)
+    #         return normalize('NFKC', normalize('NFKD', s.lower()).translate(trans_tab))
+
+    #     ############################
+    #     gdf = self.land_uses.reset_index()
+
+    #     q = t.query(gdf['geometry'], predicate='intersects')
+    #     tmp = pd.DataFrame(index=q[0])
+    #     gdf = pd.merge(gdf, tmp, left_index=True, right_index=True)
+
+    #     gdf = gpd.overlay(gdf, gpd.GeoDataFrame(geometry=[self.bounds]), how='intersection', keep_geom_type=False)
+    #     gdf['area'] = gdf['geometry'].area
+
+    #     gdf['simple_use'] = gdf['use'].apply(simplify_string)
+    #     gdf = pd.merge(gdf, mapping_df, how='left', left_on='simple_use', right_index=True)
+    #     del gdf['simple_use']
+
+    #     gdf_area_by_use = gdf.groupby(['new_use']).agg({'area': 'sum'}).reset_index().rename(columns={'area': 'area_by_use'})
+
+    #     ############################
+    #     base_gdf = self.base_land_uses.reset_index()
+
+    #     q = t.query(base_gdf['geometry'], predicate='intersects')
+    #     tmp = pd.DataFrame(index=q[0])
+    #     base_gdf = pd.merge(base_gdf, tmp, left_index=True, right_index=True)
+
+    #     base_gdf = gpd.overlay(base_gdf, gpd.GeoDataFrame(geometry=[self.bounds]), how='intersection', keep_geom_type=False)
+    #     base_gdf['area'] = base_gdf['geometry'].area
+
+    #     base_gdf['simple_use'] = base_gdf['use'].apply(simplify_string)
+    #     base_gdf = pd.merge(base_gdf, mapping_df, how='left', left_on='simple_use', right_index=True)
+    #     del base_gdf['simple_use']
+
+    #     base_gdf_area_by_use = base_gdf.groupby(['new_use']).agg({'area': 'sum'}).reset_index().rename(columns={'area': 'area_by_use'})
+
+    #     ############################
+    #     left = base_gdf_area_by_use[['new_use', 'area_by_use']].rename(columns={'area_by_use': 'base_area_by_use'})
+    #     right = gdf_area_by_use[['new_use', 'area_by_use', 'project']]
+    #     change_gdf = pd.merge(left, right, how='left', on='new_use')
+
+    #     change_gdf['change_percentage_by_use'] = (change_gdf['area_by_use'] / change_gdf['base_area_by_use']) - 1.0
+
+    #     ############################
+    #     project_gdf = change_gdf[~change_gdf['project'].isnull()]
+    #     project_gdf = project_gdf.group_by('project')
+
+    #     ############################
+    #     gdf_area_by_use['percentage'] = 100.0 * gdf_area_by_use['area_by_use'] / total_area
+    #     gdf_area_by_use['percentage'] = round(gdf_area_by_use['percentage'], 4)
+    #     del gdf_area_by_use['area_by_use']
+    #     gdf_area_by_use.sort_values(by='percentage', inplace=True, ascending=False)
+    #     gdf_area_by_use.rename(columns={'new_use': 'label', 'percentage': 'value'}, inplace=True)
+    #     total_percentage_data = gdf_area_by_use.to_dict(orient='records')
+
+    #     total_percentage = {}
+    #     total_percentage['index'] = 0
+    #     total_percentage['type'] = 'pie_chart'
+    #     total_percentage['data'] = total_percentage_data
+    #     total_percentage['positive'] = False
+    #     total_percentage['name'] = 'Usos de suelo'
+    #     total_percentage['unit'] = '%'
+    #     total_percentage['unit_short'] = '%'
+
+    #     self.secondary_data.append(total_percentage)
+
         mapping_df = pd.DataFrame(index=self.mapping.keys(), data=self.mapping.values()).rename(columns={0: 'new_use'})
         t = STRtree([self.bounds])
 
@@ -552,6 +650,7 @@ class Indicator():
             q = t.query(gdf['geometry'], predicate='intersects')
             tmp = pd.DataFrame(index=q[0])
             gdf = pd.merge(gdf, tmp, left_index=True, right_index=True)
+
             gdf = gpd.overlay(gdf, gpd.GeoDataFrame(geometry=[self.bounds]), how='intersection', keep_geom_type=False)
 
         gdf['area'] = gdf.to_crs(32718)['geometry'].area
@@ -569,6 +668,7 @@ class Indicator():
             q = t.query(base_gdf['geometry'], predicate='intersects')
             tmp = pd.DataFrame(index=q[0])
             base_gdf = pd.merge(base_gdf, tmp, left_index=True, right_index=True)
+
             base_gdf = gpd.overlay(base_gdf, gpd.GeoDataFrame(geometry=[self.bounds]), how='intersection', keep_geom_type=False)
 
         base_gdf['area'] = base_gdf.to_crs(32718)['geometry'].area
@@ -581,153 +681,29 @@ class Indicator():
         #########################################################################
 
         left = base_gdf_area_by_use[['new_use', 'area_by_use']].rename(columns={'area_by_use': 'base_area_by_use'})
-        print(left)
-        right = gdf_area_by_use[['new_use', 'area_by_use']].rename(columns={'area_by_use': 'new_area_by_use'})
-        print(right)
-        change_gdf = pd.merge(left, right, how='outer', on='new_use').fillna(0)
-        print(change_gdf)
+        right = gdf_area_by_use[['new_use', 'area_by_use']]
+        total_change_gdf = pd.merge(left, right, how='left', on='new_use')
 
-        change_gdf['change_percentage_by_use'] = round((change_gdf['new_area_by_use'] / change_gdf['base_area_by_use'] - 1.0) * 100.0, 1)
-        change_gdf['change_area_by_use'] = round(change_gdf['new_area_by_use'] - change_gdf['base_area_by_use'], 1)
+        total_change_gdf['change_percentage_by_use'] = (total_change_gdf['area_by_use'] / total_change_gdf['base_area_by_use'] - 1.0) * 100.0
+        total_change_gdf['change_area_by_use'] = total_change_gdf['area_by_use'] - total_change_gdf['base_area_by_use']
 
-        area_change_gdf = change_gdf[['new_use', 'change_area_by_use']]
-        area_change_gdf = area_change_gdf[area_change_gdf['change_area_by_use'] != 0]
-        print(area_change_gdf)
-        area_change_gdf.rename(columns={'new_use': 'label', 'change_area_by_use': 'value'}, inplace=True)
-        area_change_gdf = area_change_gdf.to_dict(orient='records')
-        
-        percentage_change_gdf = change_gdf[['new_use', 'change_percentage_by_use']]
-        percentage_change_gdf.replace([np.inf, -np.inf], np.nan, inplace=True)
-        percentage_change_gdf.dropna(inplace=True)
-        percentage_change_gdf = percentage_change_gdf[percentage_change_gdf['change_percentage_by_use'] != 0]
-        print(percentage_change_gdf)
-        percentage_change_gdf = percentage_change_gdf[percentage_change_gdf['change_percentage_by_use'].notna()]
-        percentage_change_gdf.rename(columns={'new_use': 'label', 'change_percentage_by_use': 'value'}, inplace=True)
-        percentage_change_gdf = percentage_change_gdf.to_dict(orient='records')
+        total_change_gdf['change_area_by_use'] = round(total_change_gdf['change_area_by_use'], 1)
+        total_change_gdf['change_percentage_by_use'] = round(total_change_gdf['change_percentage_by_use'], 1)
 
-        self.secondary_data.append({
-            'index': 2,
-            'type': 'project_change',
-            'data': area_change_gdf,
-            'positive': True,
-            'name': 'Cambio absoluto',
-            'unit': 'm²',
-            'unit_short': 'm²'
-        })
+        total_change_gdf = total_change_gdf[['new_use', 'change_area_by_use']]
+        total_change_gdf.rename(columns={'new_use': 'label', 'change_area_by_use': 'value'}, inplace=True)
+        total_change_gdf = total_change_gdf.to_dict(orient='records')
 
-        self.secondary_data.append({
-            'index': 3,
-            'type': 'project_change',
-            'data': percentage_change_gdf,
-            'positive': True,
-            'name': 'Cambio porcentual',
-            'unit': '%',
-            'unit_short': '%'
-        })
-        pass
+        total_change = {}
+        total_change['index'] = 1
+        total_change['type'] = 'project_change'
+        total_change['data'] = total_change_gdf
+        total_change['positive'] = False    # o falso no se que va acá ayudaaaaaa
+        total_change['name'] = 'Cambio absoluto'
+        total_change['unit'] = 'm²'
+        total_change['unit_short'] = 'm²'
 
-    def compute_upgrade(self):
-        h3_cells = self.h3_cells
-
-        base_land_uses = self.base_land_uses
-        base_overlay_gdf = gpd.overlay(h3_cells, base_land_uses, how='intersection', keep_geom_type=False)
-
-        deleted_land_uses = self.deleted_land_uses
-        changes_land_uses = pd.concat([self.land_uses, deleted_land_uses])
-        overlay_gdf = gpd.overlay(h3_cells, changes_land_uses, how='intersection', keep_geom_type=False)
-
-        # grouped = overlay_gdf.dropna(subset='project').groupby('code')
-
-        # #########################################################################
-
-        # mapping_df = pd.DataFrame(index=self.mapping.keys(), data=self.mapping.values()).rename(columns={0: 'new_use'})
-        # t = STRtree([self.bounds])
-
-        # def simplify_string(s: str):
-        #     trans_tab = dict.fromkeys(map(ord, u'\u0301\u0308'), None)
-        #     return normalize('NFKC', normalize('NFKD', s.lower()).translate(trans_tab))
-
-        # gdf = self.land_uses.reset_index()
-
-        # if self.bounds:
-        #     q = t.query(gdf['geometry'], predicate='intersects')
-        #     tmp = pd.DataFrame(index=q[0])
-        #     gdf = pd.merge(gdf, tmp, left_index=True, right_index=True)
-        #     gdf = gpd.overlay(gdf, gpd.GeoDataFrame(geometry=[self.bounds]), how='intersection', keep_geom_type=False)
-
-        # gdf['area'] = gdf.to_crs(32718)['geometry'].area
-        # gdf['simple_use'] = gdf['use'].apply(simplify_string)
-        # gdf = pd.merge(gdf, mapping_df, how='left', left_on='simple_use', right_index=True)
-        # del gdf['simple_use']
-
-        # gdf_area_by_use = gdf.groupby(['new_use']).agg({'area': 'sum'}).reset_index().rename(columns={'area': 'area_by_use'})
-
-        # #########################################################################
-
-        # base_gdf = self.base_land_uses.reset_index()
-
-        # if self.bounds:
-        #     q = t.query(base_gdf['geometry'], predicate='intersects')
-        #     tmp = pd.DataFrame(index=q[0])
-        #     base_gdf = pd.merge(base_gdf, tmp, left_index=True, right_index=True)
-        #     base_gdf = gpd.overlay(base_gdf, gpd.GeoDataFrame(geometry=[self.bounds]), how='intersection', keep_geom_type=False)
-
-        # base_gdf['area'] = base_gdf.to_crs(32718)['geometry'].area
-        # base_gdf['simple_use'] = base_gdf['use'].apply(simplify_string)
-        # base_gdf = pd.merge(base_gdf, mapping_df, how='left', left_on='simple_use', right_index=True)
-        # del base_gdf['simple_use']
-
-        # base_gdf_area_by_use = base_gdf.groupby(['new_use']).agg({'area': 'sum'}).reset_index().rename(columns={'area': 'area_by_use'})
-
-        # #########################################################################
-
-        # left = base_gdf_area_by_use[['new_use', 'area_by_use']].rename(columns={'area_by_use': 'base_area_by_use'})
-        # print(left)
-        # right = gdf_area_by_use[['new_use', 'area_by_use']].rename(columns={'area_by_use': 'new_area_by_use'})
-        # print(right)
-        # change_gdf = pd.merge(left, right, how='outer', on='new_use').fillna(0)
-        # print(change_gdf)
-
-        # change_gdf['change_percentage_by_use'] = (change_gdf['new_area_by_use'] / change_gdf['base_area_by_use'] - 1.0) * 100.0
-        # change_gdf['change_area_by_use'] = change_gdf['new_area_by_use'] - change_gdf['base_area_by_use']
-
-        # change_gdf['change_area_by_use'] = round(change_gdf['change_area_by_use'], 1)
-        # change_gdf['change_percentage_by_use'] = round(change_gdf['change_percentage_by_use'], 1)
-
-        # area_change_gdf = change_gdf[['new_use', 'change_area_by_use']]
-        # area_change_gdf = area_change_gdf[area_change_gdf['change_area_by_use'] != 0]
-        # print(area_change_gdf)
-        # area_change_gdf.rename(columns={'new_use': 'label', 'change_area_by_use': 'value'}, inplace=True)
-        # area_change_gdf = area_change_gdf.to_dict(orient='records')
-        
-        # percentage_change_gdf = change_gdf[['new_use', 'change_percentage_by_use']]
-        # percentage_change_gdf.replace([np.inf, -np.inf], np.nan, inplace=True)
-        # percentage_change_gdf.dropna(inplace=True)
-        # percentage_change_gdf = percentage_change_gdf[percentage_change_gdf['change_percentage_by_use'] != 0]
-        # print(percentage_change_gdf)
-        # percentage_change_gdf = percentage_change_gdf[percentage_change_gdf['change_percentage_by_use'].notna()]
-        # percentage_change_gdf.rename(columns={'new_use': 'label', 'change_percentage_by_use': 'value'}, inplace=True)
-        # percentage_change_gdf = percentage_change_gdf.to_dict(orient='records')
-
-        # self.secondary_data.append({
-        #     'index': 2,
-        #     'type': 'project_change',
-        #     'data': area_change_gdf,
-        #     'positive': True,
-        #     'name': 'Cambio absoluto',
-        #     'unit': 'm²',
-        #     'unit_short': 'm²'
-        # })
-
-        # # self.secondary_data.append({
-        # #     'index': 3,
-        # #     'type': 'project_change',
-        # #     'data': percentage_change_gdf,
-        # #     'positive': True,
-        # #     'name': 'Cambio porcentual',
-        # #     'unit': '%',
-        # #     'unit_short': '%'
-        # # })
+        self.secondary_data.append(total_change)
         pass
 
     def get_color(self, value, vmin, vmax, alpha, cmap, max_alpha=255):
@@ -735,62 +711,55 @@ class Indicator():
         color = cmap(norm(value))
         return [int(color[0] * 255), int(color[1] * 255), int(color[2] * 255), int(alpha * max_alpha)]
 
-    def compute_histogram(self):
-        # Histogram
+    # def compute_histogram(self):
+    #     # Histogram
 
-        gdf = self.indicator.copy()
-
-        if self.bounds:
-            t = STRtree([self.bounds])
-            tmp = pd.DataFrame(index=t.query(gdf['geometry'], predicate='intersects')[0])
-            gdf = pd.merge(gdf, tmp, left_index=True, right_index=True)
-
-        labels_count = 5
-        max_diversity = gdf['diversity'].max()
-        min_diversity = gdf['diversity'].min()
-        interval_size = (max_diversity - min_diversity) / labels_count
-        color_interval_size = (max_diversity - min_diversity) / (labels_count - 1)
-
-        labels = [f'{round(self.vmin + i * interval_size, 1)} - {round(self.vmin + (i + 1) * interval_size, 1)}' for i in range(labels_count)]
-
-        labels = [{
-            # 'label': f'{round(self.vmin + i * interval_size)} - {round(self.vmin + (i + 1) * interval_size)}',
-            'label': labels[i],
-            'index': labels_count - 1 - i,
-            'group': i,
-            'color': self.get_color(self.vmin + i * color_interval_size, self.vmin, self.vmax, 1, self.cmap)
-        } for i in range(labels_count)]
-
-        histogram_labels = pd.DataFrame.from_records(labels)
-
-        #################################################################################
-
-        histogram_data = gdf[['diversity']].reset_index(drop=True)
-        histogram_data['group'] = (histogram_data['diversity'] / interval_size).clip(upper=labels_count - 1).astype(int)
-        histogram_data = histogram_data['group'].value_counts().reset_index().rename(columns={'count': 'value'})
+    #     gdf = self.indicator.copy()
         
-        im = histogram_data['value'].idxmax()
-        histogram_data.loc[im, 'value'] = np.ceil(histogram_data.loc[im, 'value'])
-        histogram_data = histogram_data.round()
+    #     if self.bounds:
+    #         gdf = gdf[gdf['geometry'].apply(lambda g: intersects(self.bounds, g))]
+    #         gdf = gdf[~gdf['geometry'].is_empty]
 
-        histogram_data = histogram_labels.merge(histogram_data, how='left', on='group')
+    #     histogram_data = pd.DataFrame({'diversity': gdf['diversity']})
 
-        histogram_data.fillna(0, inplace=True)
-        histogram_data = histogram_data[['label', 'value', 'index', 'color']]
-        histogram_data['index'] = histogram_data['index'].astype(int)
-        histogram_data = histogram_data.to_dict(orient='records')
+    #     interval_size = self.interval_size
+    #     histogram_data['diversity'] = histogram_data['diversity'].apply(lambda v: min(v, self.vmax) // interval_size * interval_size).astype(int)
+    #     m = histogram_data['diversity'].max()
 
-        self.secondary_data.append({
-            'index': 0,
-            'type': 'histogram',
-            'data': histogram_data,
-            'name': 'Histograma',
-            'unit': '',
-            'unit_short': '',
-            'value_unit': 'hexágonos',
-            'value_unit_short': 'hex'
-        })
-        pass
+    #     histogram_data = pd.DataFrame({'value': histogram_data['diversity'].value_counts(dropna=False)})
+
+    #     # labels_count = int(m / interval_size) + 1
+    #     labels_count = int(m / interval_size) + 1
+    #     interval_size = m / (labels_count - 1)
+    #     interval_size = 
+
+    #     labels = [{
+    #         'label': f'{i * interval_size} - {(i + 1) * interval_size}',
+    #         'index': i,
+    #         'diversity': i * interval_size,
+    #         'color': self.get_color(i * interval_size, self.vmin, self.vmax, 1, self.cmap)
+    #     } for i in range(labels_count)]
+    #     labels[-1]['label'] = f'> {labels[-1]["diversity"]}'
+    #     histogram_labels = pd.DataFrame.from_records(labels)
+
+    #     histogram_data = histogram_labels.merge(histogram_data, how='left', left_on='diversity', right_index=True)
+    #     histogram_data.fillna(0, inplace=True)
+    #     histogram_data = histogram_data[['label','value','index', 'color']]
+    #     histogram_data['index'] = histogram_data['index'].astype(int)
+    #     histogram_data = histogram_data.to_dict(orient='records')
+
+    #     histogram = {}
+    #     histogram['index'] = 0
+    #     histogram['type'] = 'histogram'
+    #     histogram['data'] = histogram_data
+    #     histogram['positive'] = False
+    #     histogram['name'] = 'Histograma'
+    #     histogram['unit'] = 'minutos'
+    #     histogram['unit_short'] = 'min'
+        
+    #     self.secondary_data.append(histogram)
+
+    #     pass
 
     def set_legend(self):
         # Legend
@@ -800,7 +769,7 @@ class Indicator():
         labels_count = 5
         self.vmin = gdf['diversity'].min()
         self.vmax = gdf['diversity'].max()
-        interval_size = (self.vmax - self.vmin) / (labels_count)
+        interval_size = (self.vmax - self.vmin) / (labels_count - 1)
 
         data = [{
             'label': f'{self.vmin + round(i * interval_size, 1)} - {self.vmin + round((i + 1) * interval_size, 1)}',
@@ -937,14 +906,12 @@ class Indicator():
                     self.execute_process()
 
                 self.set_border('box')
-                
-                self.compute_histogram()
+                    
                 self.compute_percentage()
                 self.set_legend()
 
                 if not self.base and not self.base_indicator.empty:
                     self.compute_differences()
-                    # self.compute_upgrade()
             except Exception as e:
                 print('exception in execute_process:',e)
                 raise e

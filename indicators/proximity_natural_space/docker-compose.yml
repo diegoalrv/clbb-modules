@@ -1,6 +1,6 @@
 services:
   app:
-    container_name: proximity_bus_stops
+    container_name: proximity_green_areas
     build: .
     env_file:
       - .env
