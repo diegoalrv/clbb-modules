@@ -1,6 +1,6 @@
 services:
   app:
-    container_name: urban_spaces_quality
+    container_name: waze_jams
     build: .
     env_file:
       - .env
