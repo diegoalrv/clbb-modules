@@ -1,0 +1,7 @@
+numpy<2.0
+pandas
+geopandas
+shapely
+requests
+pyarrow
+matplotlib
