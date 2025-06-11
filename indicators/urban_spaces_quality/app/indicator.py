@@ -96,7 +96,7 @@ class Indicator():
             self.bounds = None
     
     def load_resource(self, resource, environment, user, fields='', query_params='', update=False):
-        parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
+        parquet_path = f'/usr/src/app/shared/data/{resource}.parquet'
         if self.cache and os.path.exists(parquet_path):
             print(parquet_path, 'does exist')
             try:
@@ -225,7 +225,7 @@ class Indicator():
         user = self.load_item('user', self.user)
 
         imported_projects = [p['id'] for p in scenario['imported_projects']]
-        self.projects = [p for p in self.projects if p != 3 and p in imported_projects]
+        self.projects = [p for p in self.projects if p in imported_projects]
 
         self.projects_name = {p['id']: p['name'] for p in scenario['imported_projects']}
         self.counting_projects = set()
@@ -256,7 +256,7 @@ class Indicator():
         pass
     
     def load_base_indicator(self):
-        input_path = f'/usr/src/app/shared/zone_{self.zone}/urban_spaces_quality/base{"_geo" if self.geo_output else ""}.json'
+        input_path = f'/usr/src/app/shared/urban_spaces_quality/base{"_geo" if self.geo_output else ""}.json'
 
         if not os.path.exists(input_path):
             print(f"El archivo {input_path} no existe.")
@@ -278,7 +278,7 @@ class Indicator():
         
         base_indicator.rename(columns={'value': 'quality'}, inplace=True)
         return base_indicator
-
+    
     def load_area_of_interest(self):
         endpoint = f'{self.server_address}/api/zone/{self.zone}/'
         response = requests.get(endpoint)
@@ -291,7 +291,7 @@ class Indicator():
     def load_grid_points(self):
         grid_points = None
         
-        input_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}{"_geo" if self.geo_input else ""}.json'
+        input_path = f'/usr/src/app/shared/grid_points/spacing_{self.x_spacing}_{self.y_spacing}{"_geo" if self.geo_input else ""}.json'
         print(f'opening path {input_path}')
         if os.path.exists(input_path):
             with open(input_path, "r") as file:
@@ -307,7 +307,7 @@ class Indicator():
 
         return grid_points
 
-    def get_grid_points_from_area(geometry, x_spacing: int, y_spacing: int) -> gpd.GeoDataFrame:
+    def get_grid_points_from_area(self, geometry, x_spacing: int, y_spacing: int) -> gpd.GeoDataFrame:
         latmin, lonmin, latmax, lonmax = geometry.bounds
         prep_geometry = prep(geometry)
 
@@ -316,7 +316,7 @@ class Indicator():
             for lon in np.arange(lonmin, lonmax, y_spacing):
                 points.append(Point((round(lat,4), round(lon,4))))
 
-        points_inside = gpd.GeoDataFrame(geometry=list(filter(prep_geometry.contains, points)))
+        points_inside = gpd.GeoDataFrame(geometry=list(filter(prep_geometry.contains, points)), crs=32718)
         points_inside['id'] = points_inside.index
         return points_inside
 
@@ -873,9 +873,9 @@ class Indicator():
         print('exporting data')
 
         if self.base:
-            output_path = f'/usr/src/app/shared/zone_{self.zone}/urban_spaces_quality/base{"_geo" if self.geo_output else ""}.json'
+            output_path = f'/usr/src/app/shared/urban_spaces_quality/base{"_geo" if self.geo_output else ""}.json'
         else:
-            output_path = f'/usr/src/app/shared/zone_{self.zone}/urban_spaces_quality/result{self.result}{"_geo" if self.geo_output else ""}.json'
+            output_path = f'/usr/src/app/shared/urban_spaces_quality/result{self.result}{"_geo" if self.geo_output else ""}.json'
 
         # self.indicator = self.indicator.replace({np.inf: 999, -np.inf: 999, np.nan: None})
         self.indicator.replace({np.nan: None}, inplace=True)

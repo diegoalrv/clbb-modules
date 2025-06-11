@@ -9,11 +9,13 @@ class Processing:
     def __init__(self):
         self.load_env_variables()
         self.props_per_resource = {
-            'node': ['id', 'osm_id', 'wkb'],
-            'street': ['id', 'name', 'osm_id', 'osm_src', 'osm_dst', 'src', 'dst', 'max_speed', 'lanes', 'one_way', 'reversed', 'drive', 'walk', 'length', 'wkb'],
-            'busstop': ['id', 'name', 'bus_stop_type', 'wkb'],
-            'landuse': ['id', 'use', 'wkb'],
+            'amenity': ['id', 'category', 'wkb'],
+            'node': ['id', 'osm_id', 'street_count', 'degree', 'wkb'],
+            'street': ['id', 'name', 'osm_id', 'osm_src', 'osm_dst', 'src', 'dst', 'max_speed', 'lanes', 'one_way', 'wkb'],
+            'busstop': ['id', 'name', 'wkb'],
             'greenarea': ['id', 'name', 'public_space_type', 'wkb'],
+            'urbanspace': ['id', 'name', 'public_space_type', 'quality', 'wkb'],
+            'landuse': ['id', 'use', 'wkb'],
             'neighborhood': ['id', 'name', 'residents', 'wkb'],
             'block': ['id', 'density', 'wkb']
         }
@@ -23,16 +25,16 @@ class Processing:
     # Loaders    
     def load_env_variables(self):
         self.server_address = os.getenv('server_address', 'http://localhost:8000')
-        self.zone = int(os.getenv('zone', 1))
         
         self.resource = os.getenv('resource', None)
+        self.delete = os.getenv('delete', 'False') == 'True'
         self.data = None
         pass
 
     def load_data(self):
         print('load_data')
 
-        output_path = f'/usr/src/app/shared/zone_{self.zone}/data/{self.resource}.parquet'
+        output_path = f'/usr/src/app/shared/data/{self.resource}.parquet'
 
         if os.path.exists(output_path):
             print(f"El archivo {output_path} ya existe.")
@@ -62,7 +64,11 @@ class Processing:
     ############################################################
     # Methods
     def fetch_resource(self):
-        r = requests.get(f'{self.server_address}/api/{self.resource}/?zone={self.zone}&fields={",".join(self.props_per_resource[self.resource])}')
+        r = requests.get(f'{self.server_address}/api/{self.resource}/?fields={",".join(self.props_per_resource[self.resource])}')
+        print(r.status_code)
+        if r.status_code != 200:
+            print(r.content.decode())
+            return
         j = r.json()
         
         df = pd.DataFrame.from_records(j)
@@ -84,15 +90,16 @@ class Processing:
     def export_data(self):
         print('export_data')
 
-        output_path = f'/usr/src/app/shared/zone_{self.zone}/data/{self.resource}.parquet'
+        output_path = f'/usr/src/app/shared/data/{self.resource}.parquet'
 
         output_dir = os.path.dirname(output_path)
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
+        print(self.data.head().to_string())
         self.data.to_parquet(output_path)
 
-        parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{self.resource}.parquet'
+        parquet_path = f'/usr/src/app/shared/data/{self.resource}.parquet'
 
         if not os.path.exists(parquet_path):
             raise FileNotFoundError(f"El archivo {parquet_path} no existe.")
@@ -100,8 +107,8 @@ class Processing:
         try:
             data_gdf = gpd.read_parquet(parquet_path)
             data_gdf.set_crs(4326, inplace=True)
-            print(data_gdf.iloc[0])
             print(len(data_gdf))
+            print(data_gdf.head())
         except Exception as e:
             print(f"Error al leer el archivo {parquet_path}: {str(e)}")
         pass
@@ -109,8 +116,15 @@ class Processing:
     ############################################################
 
     def execute(self):
-        self.load_data()
-        if self.resource in self.props_per_resource.keys():
-            self.execute_process()
-            self.export_data()
+        if self.delete:
+            path = f'/usr/src/app/shared/data/{self.resource}.parquet'
+            if os.path.exists(path):
+                os.remove(path)
+            else:
+                print(f"File not found: {path}")
+        else:
+            self.load_data()
+            if self.resource in self.props_per_resource.keys():
+                self.execute_process()
+                self.export_data()
         pass

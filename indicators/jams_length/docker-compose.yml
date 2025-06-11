@@ -1,6 +1,6 @@
 services:
   app:
-    container_name: waze_jams
+    container_name: jams_length
     build: .
     env_file:
       - .env

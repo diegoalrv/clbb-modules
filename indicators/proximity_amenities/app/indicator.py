@@ -50,23 +50,19 @@ class Indicator():
         self.resolution = int(os.getenv('resolution', 10))
         self.x_spacing = int(os.getenv('x_spacing', 50))
         self.y_spacing = int(os.getenv('y_spacing', 50))
-        self.geo_input = os.getenv('geo_input', 'False') == 'True'
-        self.geo_output = os.getenv('geo_output', 'False') == 'True'
         self.local = os.getenv('local', 'False') == 'True'
         self.cache = os.getenv('cache', 'True') == 'True'
         self.geometry = os.getenv('geometry', 'False') == 'True'
         self.base = os.getenv('base', 'False') == 'True'
-
-        self.category = os.getenv('category', None)
-        self.super_category = os.getenv('super_category', None)
-        self.shop = os.getenv('shop', None)
-        self.super_shop = os.getenv('super_shop', None)
 
         self.interval_size = int(os.getenv('interval_size', 5))
         self.vmin = int(os.getenv('vmin', 0))
         self.vmax = int(os.getenv('vmax', 15))
         cmap_name = os.getenv('cmap', 'RdYlGn_r')
         self.cmap = plt.cm.get_cmap(cmap_name)
+
+        self.category = os.getenv('category', None)
+        self.neighborhood = os.getenv('neighborhood', None)
 
         try:
             projects = json.loads(os.getenv('projects', '[]'))
@@ -88,7 +84,7 @@ class Indicator():
             self.bounds = None
 
     def load_resource(self, resource, environment, user, fields='', query_params='', update=False):
-        parquet_path = f'/usr/src/app/shared/zone_{self.zone}/data/{resource}.parquet'
+        parquet_path = f'/usr/src/app/shared/data/{resource}.parquet'
         if self.cache and os.path.exists(parquet_path):
             print(parquet_path, 'does exist')
             try:
@@ -97,7 +93,7 @@ class Indicator():
                 data_gdf['project'] = None
                 data_gdf['change_type'] = 'Create'
                 data_gdf.set_crs(4326, inplace=True)
-                data_gdf.set_index('id', inplace=True)
+                data_gdf.set_index('id', inplace=True, drop=False)
                 
                 endpoint = f'{self.server_address}/api/{resource}/data/?environment={environment}&user={user}&types=project,changes&fields=id,{fields},scenario,project,data_source,updating,change_type,source_type,wkb&{query_params}'
                 response = requests.get(endpoint)
@@ -112,12 +108,19 @@ class Indicator():
 
             base_data = next((item['data'] for item in data if item['type'] == 'base'), [])
 
-            base_df = pd.DataFrame(base_data)
-            base_df['geometry'] = base_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-            del base_df['wkb']
-            data_gdf = gpd.GeoDataFrame(base_df)
-            data_gdf.set_crs(4326, inplace=True)
-            data_gdf.set_index('id', inplace=True)
+            default_fields = ['id', 'scenario', 'project', 'data_source', 'updating', 'change_type', 'source_type', 'geometry']
+            if not base_data:
+                fields = list(set(fields.split(',')  + default_fields))
+                data_gdf = gpd.GeoDataFrame(columns=fields, geometry='geometry', crs='EPSG:4326')
+                data_gdf.set_index('id', inplace=True, drop=False)
+            else:
+                base_df = pd.DataFrame(base_data)
+                base_df['geometry'] = base_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
+                del base_df['wkb']
+                data_gdf = gpd.GeoDataFrame(base_df, geometry='geometry', crs='EPSG:4326')
+                data_gdf.set_index('id', inplace=True, drop=False)
+        
+        data_gdf['project'] = None
 
         base_data_gdf = data_gdf.copy()
         deleted_data_gdf = pd.DataFrame()
@@ -130,6 +133,8 @@ class Indicator():
                 if project_entry['project'] not in self.projects:
                     continue
 
+                print('ADDING PROJECT', project_entry['project'])
+
                 delta_df = pd.DataFrame.from_records(project_entry['data'])
                 if not delta_df.empty:
                     if project_entry['project'] not in self.counting_projects:
@@ -139,7 +144,9 @@ class Indicator():
                     del delta_df['wkb']
                     delta_gdf = gpd.GeoDataFrame(delta_df, geometry='geometry')
                     delta_gdf.set_crs(4326, inplace=True)
-                    delta_gdf.set_index('id', inplace=True)
+                    delta_gdf.set_index('id', inplace=True, drop=False)
+
+                    delta_gdf['project'] = project_entry['project']
 
                     delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
                     delete_gdf.set_crs(4326, inplace=True)
@@ -153,11 +160,16 @@ class Indicator():
 
                     modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
                     modify_gdf.set_crs(4326, inplace=True)
+                    modify_gdf.drop_duplicates(keep='first', inplace=True)
 
                     if update:
-                        data_gdf.update(modify_gdf.set_index('updating', drop=False))
+                        update_with = modify_gdf.set_index('updating', drop=False)
+                        update_with['id'] = update_with['updating']
+                        data_gdf.update(update_with, overwrite=True)
                         data_gdf = gpd.GeoDataFrame(pd.concat([data_gdf, create_gdf]), geometry='geometry', crs=data_gdf.crs)
                     else:
+                        ids_to_modify = set(modify_gdf['updating'])
+                        data_gdf = data_gdf.loc[~data_gdf.index.isin(ids_to_modify), :]
                         data_gdf = gpd.GeoDataFrame(pd.concat([data_gdf, create_gdf, modify_gdf]), geometry='geometry', crs=data_gdf.crs)
 
             for scenario_entry in changes_data:
@@ -174,7 +186,8 @@ class Indicator():
                         del delta_df['wkb']
                         delta_gdf = gpd.GeoDataFrame(delta_df)
                         delta_gdf.set_crs(4326, inplace=True)
-                        delta_gdf.set_index('id', inplace=True)
+                        delta_gdf.set_index('id', inplace=True, drop=False)
+                        delta_gdf['project'] = project_entry['project']
 
                         delete_gdf = delta_gdf[delta_gdf['change_type'] == 'Delete']
                         delete_gdf.set_crs(4326, inplace=True)
@@ -188,14 +201,19 @@ class Indicator():
 
                         modify_gdf = delta_gdf[delta_gdf['change_type'] == 'Modify']
                         modify_gdf.set_crs(4326, inplace=True)
+                        modify_gdf.drop_duplicates(keep='first', inplace=True)
 
                         if update:
-                            data_gdf.update(modify_gdf.set_index('updating', drop=False))
+                            update_with = modify_gdf.set_index('updating', drop=False)
+                            update_with['id'] = update_with['updating']
+                            data_gdf.update(update_with, overwrite=True)
                             data_gdf = gpd.GeoDataFrame(pd.concat([data_gdf, create_gdf]), geometry='geometry', crs=data_gdf.crs)
                         else:
+                            ids_to_modify = set(modify_gdf['updating'])
+                            data_gdf = data_gdf.loc[~data_gdf.index.isin(ids_to_modify), :]
                             data_gdf = gpd.GeoDataFrame(pd.concat([data_gdf, create_gdf, modify_gdf]), geometry='geometry', crs=data_gdf.crs)
 
-        data_gdf.reset_index(inplace=True)
+        data_gdf.reset_index(inplace=True, drop=True)
         if not deleted_data_gdf.empty:
             deleted_data_gdf = gpd.GeoDataFrame(deleted_data_gdf, geometry='geometry', crs=4326)
         
@@ -227,79 +245,77 @@ class Indicator():
         environment_id = scenario['environment']
         user = self.load_item('user', self.user)
 
-        imported_projects = [p['id'] for p in scenario['imported_projects']]
-        self.projects = [p for p in self.projects if p != 3 and p in imported_projects]
+        if self.neighborhood:
+            neighborhood = self.load_item('neighborhood', self.neighborhood)
+            neighborhood_gdf = gpd.GeoDataFrame.from_features([neighborhood], crs=4326)
+            self.bounds = neighborhood_gdf.iloc[0]['geometry']
 
-        self.projects_name = {p['id']: p['name'] for p in scenario['imported_projects']}
-        self.counting_projects = set()
+        if not self.base:
+            imported_projects = [p['id'] for p in scenario['imported_projects']]
+            self.projects = [p for p in self.projects if p in imported_projects]
+            print(self.projects)
 
-        print(self.projects)
+            self.projects_name = {p['id']: p['name'] for p in scenario['imported_projects']}
+            self.counting_projects = set()
 
-        # if not self.base:
-        #     self.base_indicator = self.load_base_indicator()
+            # if not self.grid_points_with_project.empty and len(self.projects) == 0:
+            #     self.indicator = self.grid_points_with_project
+            #     return
 
-        #     if not self.base_indicator.empty and len(self.projects) == 0:
-        #         self.indicator = self.base_indicator
-        #         return
-
-        query_params = ''
-        if self.category:
-            query_params = f'category={self.category}'
-        elif self.super_category:
-            query_params = f'super_category={self.super_category}'
-        elif self.shop:   
-            query_params = f'shop={self.shop}'
-        elif self.super_shop:
-            query_params = f'super_shop={self.super_shop}'
-
-        self.amenities, _, self.deleted_amenities = self.load_resource('amenity', environment_id, user['id'], 'name,category,super_category,shop,super_shop', query_params)
+        self.amenities, _, self.deleted_amenities = self.load_resource('amenity', environment_id, user['id'], 'name,category')
 
         if self.category:
             self.amenities = self.amenities[self.amenities['category'] == self.category]
             self.deleted_amenities = self.amenities[self.amenities['category'] == self.category]
-        elif self.super_category:
-            self.amenities = self.amenities[self.amenities['super_category'] == self.super_category]
-            self.deleted_amenities = self.amenities[self.amenities['super_category'] == self.super_category]
-        elif self.shop:
-            self.amenities = self.amenities[self.amenities['shop'] == self.shop]
-            self.deleted_amenities = self.amenities[self.amenities['shop'] == self.shop]
-        elif self.super_shop:
-            self.amenities = self.amenities[self.amenities['super_shop'] == self.super_shop]
-            self.deleted_amenities = self.amenities[self.amenities['super_shop'] == self.super_shop]
-            
+
         print('amenities:', len(self.amenities))
         print('amenity columns:', self.amenities.columns)
-
-        self.neighborhoods, _, self.deleted_neighborhoods = self.load_resource('neighborhood', environment_id, user['id'], 'name,residents')
-        print('neighborhoods:', len(self.neighborhoods))
 
         self.blocks, _, self.deleted_blocks = self.load_resource('block', environment_id, user['id'], 'density')
         print('blocks:', len(self.blocks))
 
-        self.edges, _, _ = self.load_resource('street', environment_id, user['id'], 'length,src,dst', 'network=walk')
+        self.edges, _, _ = self.load_resource('street', environment_id, user['id'], 'src,dst,length,one_way')
         print('edges:', len(self.edges))
+        self.edges['length'] = self.edges.to_crs(32718)['geometry'].length
 
-        self.nodes, _, _ = self.load_resource('node', environment_id, user['id'])
+        self.edges['edge_key'] = self.edges[['src', 'dst']].apply(lambda row: tuple(sorted((row['src'], row['dst']))), axis=1)
+        self.edges = self.edges.drop_duplicates(subset='edge_key')
+        self.edges = self.edges.drop(columns='edge_key')
+
+        reversed_edges = self.edges.copy()
+        reversed_edges['aux'] = reversed_edges['src']
+        reversed_edges['src'] = reversed_edges['dst']
+        reversed_edges['dst'] = reversed_edges['aux']
+        reversed_edges.drop(columns='aux', inplace=True)
+        self.edges = gpd.GeoDataFrame(pd.concat([self.edges, reversed_edges]), geometry='geometry', crs=self.edges.crs)
+
+        self.edges['one_way'] = True
+
+        print(self.edges)
+
+        self.nodes, _, _ = self.load_resource('node', environment_id, user['id'], update=True)
         print('nodes:', len(self.nodes))
-        
-        ref_nodes = set(list(self.edges['src']) + list(self.edges['dst']))
-        self.nodes = pd.merge(self.nodes, pd.DataFrame(index=list(ref_nodes)), 'right', left_on='id', right_index=True)
+
+        ref_nodes = list(pd.concat([self.edges['src'], self.edges['dst']]).drop_duplicates())
+        right = pd.DataFrame({'id': ref_nodes})
+        self.nodes = pd.merge(self.nodes, right, 'right', 'id')
         
         # 1. Merge src coordinates
         src_coords = self.nodes[['id', 'geometry']].copy()
-        src_coords['src_coords'] = src_coords['geometry'].apply(lambda g: g.coords[0])
+        src_coords['src_coords'] = src_coords['geometry'].apply(lambda g: g.coords[0] if g else None)
         src_coords.drop(columns='geometry', inplace=True)
         edges_updated = self.edges.merge(src_coords.rename(columns={'id': 'src'}), on='src', how='left')
 
         # 2. Merge dst coordinates
         dst_coords = self.nodes[['id', 'geometry']].copy()
-        dst_coords['dst_coords'] = dst_coords['geometry'].apply(lambda g: g.coords[0])
+        dst_coords['dst_coords'] = dst_coords['geometry'].apply(lambda g: g.coords[0] if g else None)
         dst_coords.drop(columns='geometry', inplace=True)
         edges_updated = edges_updated.merge(dst_coords.rename(columns={'id': 'dst'}), on='dst', how='left')
 
         # 3. Vectorized LineString creation
         edges_updated['geometry'] = [
-            LineString([src, dst]) for src, dst in zip(edges_updated['src_coords'], edges_updated['dst_coords'])
+            LineString([src, dst]) if src is not None and dst is not None else np.nan
+            for src, dst in zip(edges_updated['src_coords'], edges_updated['dst_coords'])
         ]
 
         # 4. Drop temporary columns
@@ -311,66 +327,73 @@ class Indicator():
         self.area = self.load_area_of_interest()
         print('area:', len(self.area))
         
+        start = time.perf_counter()
         # try:
         #     self.grid_points = self.load_grid_points()
         # except:
         grid_points = self.get_grid_points_from_area(self.area.to_crs(32718).geometry.iloc[0], self.x_spacing, self.y_spacing)
         self.grid_points = grid_points.set_crs(32718).to_crs(4326)
         print('grid_points:', len(self.grid_points))
+        print(f'------------------- 4 part took {time.perf_counter() - start:.2f}s')
         
         slope_edges = self.edges.copy()
+        slope_edges['length'] = slope_edges.to_crs(32718).geometry.length
 
-        path = f'/usr/src/app/shared/assets/array_compressed.npz'
-        if os.path.exists(path):
-            try:
-                with np.load(path) as compressed_file:
-                    self.heightmap = compressed_file['arr']
-                self.heightmap_bounds = [664192.07616077, 5926728.91697535, 677208.22085332, 5947211.87605853]
-                self.height_map_res = 5.0
-            except Exception as e:
-                print(f"Error al leer el archivo {path}: {str(e)}")
+        # path = f'/usr/src/app/shared/assets/array_compressed.npz'
+        # if os.path.exists(path):
+        #     try:
+        #         with np.load(path) as compressed_file:
+        #             self.heightmap = compressed_file['arr']
+        #         self.heightmap_bounds = [664192.07616077, 5926728.91697535, 677208.22085332, 5947211.87605853]
+        #         self.height_map_res = 5.0
+        #     except Exception as e:
+        #         print(f"Error al leer el archivo {path}: {str(e)}")
 
-        # --- 5.2 Sample Heightmap
-        height_nodes = self.nodes.copy()
-        height_nodes_proj = height_nodes.to_crs(32718)
-        height_nodes['height'] = [
-            self.sample_raster(x, y, self.heightmap_bounds[0], self.heightmap_bounds[1], self.height_map_res, self.height_map_res, self.heightmap)
-            for x, y in zip(height_nodes_proj.geometry.x, height_nodes_proj.geometry.y)
-        ]
+        # # --- 5.2 Sample Heightmap
+        # height_nodes = self.nodes.copy()
+        # height_nodes_proj = height_nodes.to_crs(32718)
+        # height_nodes['height'] = [
+        #     self.sample_raster(x, y, self.heightmap_bounds[0], self.heightmap_bounds[1], self.height_map_res, self.height_map_res, self.heightmap)
+        #     for x, y in zip(height_nodes_proj.geometry.x, height_nodes_proj.geometry.y)
+        # ]
 
-        # --- 5.3 Compute Slope and Angle
-        height_cols = height_nodes[['id', 'height']]
+        # # --- 5.3 Compute Slope and Angle
+        # height_cols = height_nodes[['id', 'height']]
 
-        slope_edges = slope_edges.merge(height_cols.rename(columns={'height': 'src_height'}), left_on='src', right_on='id')
-        slope_edges = slope_edges.merge(height_cols.rename(columns={'height': 'dst_height'}), left_on='dst', right_on='id')
-        slope_edges.drop(columns=['id_x', 'id_y'], inplace=True, errors='ignore')  # optional cleanup
+        # slope_edges = slope_edges.merge(height_cols.rename(columns={'height': 'src_height'}), left_on='src', right_on='id')
+        # slope_edges = slope_edges.merge(height_cols.rename(columns={'height': 'dst_height'}), left_on='dst', right_on='id')
+        # slope_edges.drop(columns=['id_x', 'id_y'], inplace=True, errors='ignore')  # optional cleanup
 
-        # Ensure positive length
-        slope_edges['length'] = slope_edges['length'].astype(float).clip(lower=0.25)
+        # # Ensure positive length
+        # slope_edges['length'] = slope_edges['length'].astype(float).clip(lower=0.25)
 
-        # Use vectorized NumPy math
-        delta_height = slope_edges['dst_height'].values - slope_edges['src_height'].values
-        lengths = slope_edges['length'].values
-        slopes = delta_height / lengths
-        angles = np.rad2deg(np.arctan(slopes))
+        # # Use vectorized NumPy math
+        # delta_height = slope_edges['dst_height'].values - slope_edges['src_height'].values
+        # lengths = slope_edges['length'].values
+        # slopes = delta_height / lengths
+        # angles = np.rad2deg(np.arctan(slopes))
 
-        slope_edges['slope'] = slopes
-        slope_edges['angle'] = angles
+        # slope_edges['slope'] = slopes
+        # slope_edges['angle'] = angles
 
         # --- 5.4 Compute Speed and Travel Time
         speed_m_per_min = 4 * 1000 / 60  # 4 km/h
 
         # Only consider uphill angles
-        clipped_angles = np.clip(slope_edges['angle'].values, 0, None)
-        speed = speed_m_per_min * np.exp(-0.04 * clipped_angles)
-        mins = lengths / speed
+        # clipped_angles = np.clip(slope_edges['angle'].values, 0, None)
+        # speed = speed_m_per_min * np.exp(-0.04 * clipped_angles)
+        # mins = lengths / speed
+        mins = slope_edges['length'] / speed_m_per_min
 
-        slope_edges['speed'] = speed
+        # slope_edges['speed'] = speed
+        slope_edges['speed'] = speed_m_per_min
         slope_edges['mins'] = mins
 
         a, b = self.nodes_edges_to_net_format(self.nodes, slope_edges)
         print('a:', len(a))
+        print(a)
         print('b:', len(b))
+        print(b)
 
         net = self.make_network(a, b)
         self.net = net
@@ -383,7 +406,7 @@ class Indicator():
         return data
 
     def load_base_indicator(self):
-        input_path = f'/usr/src/app/shared/zone_{self.zone}/amenities_proximity/base{"_geo" if self.geo_output else ""}.json'
+        input_path = f'/usr/src/app/shared/amenities_proximity/base.json'
 
         if not os.path.exists(input_path):
             print(f"El archivo {input_path} no existe.")
@@ -394,13 +417,10 @@ class Indicator():
 
         base_indicator_json = json.loads(df_json_str)
 
-        if self.geo_output:
-            base_indicator = gpd.GeoDataFrame.from_features(base_indicator_json['features'])
-        else:
-            base_indicator = pd.DataFrame.from_records(base_indicator_json['indicator'])
-            base_indicator['geometry'] = base_indicator['wkb'].apply(lambda g: wkb.loads(g))
-            del base_indicator['wkb']
-            base_indicator = gpd.GeoDataFrame(base_indicator, geometry='geometry')
+        base_indicator = pd.DataFrame.from_records(base_indicator_json['indicator'])
+        base_indicator['geometry'] = base_indicator['wkb'].apply(lambda g: wkb.loads(g))
+        del base_indicator['wkb']
+        base_indicator = gpd.GeoDataFrame(base_indicator, geometry='geometry')
         
         base_indicator.rename(columns={'value': 'mins'}, inplace=True)
         return base_indicator
@@ -429,7 +449,7 @@ class Indicator():
         data_df = pd.DataFrame.from_records(data['indicator'])
         if 'wkb' in data_df.columns:
             data_df['geometry'] = data_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
-        del data_df['wkb']
+            del data_df['wkb']
         data_gdf = gpd.GeoDataFrame(data_df)
         data_gdf.set_geometry('geometry', inplace=True)
         data_gdf.set_crs(4326, inplace=True)
@@ -448,8 +468,8 @@ class Indicator():
         )
 
         nodes = gpd.GeoDataFrame(data=nodes, geometry=nodes_gdf.geometry)
+        nodes.drop_duplicates('id', inplace=True)
         nodes.set_index('id', inplace=True)
-        nodes.drop_duplicates(inplace=True)
 
         edges = pd.DataFrame(
             {
@@ -472,21 +492,21 @@ class Indicator():
     def make_network(self, nodes_gdf, edges_gdf):
         net = None
         # Redirige la salida estándar a /dev/null (un objeto nulo)
-        with open(os.devnull, 'w') as fnull:
+        # with open(os.devnull, 'w') as fnull:
             # Redirige la salida estándar a /dev/null temporalmente
-            old_stdout = os.dup(1)
-            os.dup2(fnull.fileno(), 1)
+            # old_stdout = os.dup(1)
+            # os.dup2(fnull.fileno(), 1)
             # Tu código para crear la red de Pandana aquí
-            net = pdna.Network(
-                nodes_gdf['lon'].astype(float),
-                nodes_gdf['lat'].astype(float),
-                edges_gdf['from'].astype(int),
-                edges_gdf['to'].astype(int),
-                edges_gdf[['mins']],
-                twoway=False
-            )
+        net = pdna.Network(
+            nodes_gdf['lon'].astype(float),
+            nodes_gdf['lat'].astype(float),
+            edges_gdf['from'].astype(int),
+            edges_gdf['to'].astype(int),
+            edges_gdf[['mins']],
+            twoway=False
+        )
             # Restaura la salida estándar original
-            os.dup2(old_stdout, 1)
+            # os.dup2(old_stdout, 1)
         return net
     
     def load_area_of_interest(self):
@@ -501,7 +521,7 @@ class Indicator():
     def load_grid_points(self):
         grid_points = None
         
-        input_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}{"_geo" if self.geo_input else ""}.json'
+        input_path = f'/usr/src/app/shared/grid_points/spacing_{self.x_spacing}_{self.y_spacing}.json'
         print(f'opening path {input_path}')
         if os.path.exists(input_path):
             with open(input_path, "r") as file:
@@ -550,13 +570,13 @@ class Indicator():
             category = "amenities"
             self.net.set_pois(
                 category=category,
-                maxdist=10_000_000,
+                maxdist=10000000,
                 maxitems=num_pois,
                 x_col=self.amenities.geometry.x.values,
                 y_col=self.amenities.geometry.y.values,
             )
             accessibility = self.net.nearest_pois(
-                distance=10_000_000,
+                distance=10000000,
                 category=category,
                 num_pois=num_pois,
                 include_poi_ids=True,
@@ -580,20 +600,21 @@ class Indicator():
                 ox.distance.great_circle(*o[::-1], *d[::-1]) for o, d in zip(origin_coords, dest_coords)
             ])
 
-            bounds = self.heightmap_bounds
-            res = self.height_map_res
-            hmap = self.heightmap
+            # bounds = self.heightmap_bounds
+            # res = self.height_map_res
+            # hmap = self.heightmap
 
-            grid_with_nearest_node["src_height"] = self.sample_raster_batch(grid_with_nearest_node.geometry.x.values, grid_with_nearest_node.geometry.y.values, bounds, res, hmap)
-            grid_with_nearest_node["dst_height"] = self.sample_raster_batch(grid_with_nearest_node["x"].values, grid_with_nearest_node["y"].values, bounds, res, hmap)
+            # grid_with_nearest_node["src_height"] = self.sample_raster_batch(grid_with_nearest_node.geometry.x.values, grid_with_nearest_node.geometry.y.values, bounds, res, hmap)
+            # grid_with_nearest_node["dst_height"] = self.sample_raster_batch(grid_with_nearest_node["x"].values, grid_with_nearest_node["y"].values, bounds, res, hmap)
 
             speed_m_per_min = (4 * 1000) / 60  # 4 km/h in m/min
 
-            delta_height = grid_with_nearest_node["dst_height"] - grid_with_nearest_node["src_height"]
-            slope = delta_height / grid_with_nearest_node["distance_to_nearest_node"].replace(0, 0.01)
-            angle = np.degrees(np.arctan(slope.clip(lower=0)))
+            # delta_height = grid_with_nearest_node["dst_height"] - grid_with_nearest_node["src_height"]
+            # slope = delta_height / grid_with_nearest_node["distance_to_nearest_node"].replace(0, 0.01)
+            # angle = np.degrees(np.arctan(slope.clip(lower=0)))
 
-            speed = speed_m_per_min * np.exp(-0.04 * angle)
+            # speed = speed_m_per_min * np.exp(-0.04 * angle)
+            speed = speed_m_per_min
             grid_with_nearest_node["mins_to_nearest_node"] = grid_with_nearest_node["distance_to_nearest_node"] / speed
 
             #####################################################
@@ -752,6 +773,11 @@ class Indicator():
         conclusion = left.merge(right, on='code')
         conclusion['change_mins'] = conclusion['new_mins'] - conclusion['base_mins']
 
+        if self.bounds:
+            t = STRtree([self.bounds])
+            tmp = pd.DataFrame(index=t.query(conclusion['geometry'], predicate='intersects')[0])
+            conclusion = pd.merge(conclusion, tmp, left_index=True, right_index=True)
+
         # in case a amenity is deleted by a project deletion change, it sets it's responsible project
         def hex_change(row):
             responsible = None
@@ -768,8 +794,10 @@ class Indicator():
                         modifications = modifications[modifications['updating'] == row['base_amenity']]
                         if len(modifications) > 0:
                             responsible = modifications.iloc[0]['project']
+                else:
+                    responsible = row['project']
             else:
-                if row['change_mins'] > 0:
+                if row['change_mins'] != 0:
                     # find project that updated amenity
                     modifications = self.amenities[self.amenities['change_type'] == 'Modify']
                     modifications = modifications[modifications['updating'] == row['base_amenity']]
@@ -892,21 +920,15 @@ class Indicator():
         hex_upgrade = conclusion.copy()
 
         print('a')
-        neighborhoods = self.neighborhoods.copy()
-
-        # area de la poblacion
-        neighborhoods.to_crs(32718, inplace=True)
-        neighborhoods['neighborhood_area'] = neighborhoods['geometry'].area
-        neighborhoods.to_crs(4326, inplace=True)
+        blocks = self.blocks.copy()
 
         print('b')
-
-        # densidad de poblacion por neighborhood
-        neighborhoods['neighborhood_density'] = neighborhoods['residents'] / (neighborhoods['neighborhood_area'] / 10000.0)
-        overlay = gpd.overlay(hex_upgrade, neighborhoods[['neighborhood_density', 'geometry']], how='intersection', keep_geom_type=False)
+        # densidad de poblacion por block
+        blocks['block_density'] = blocks['density']
+        overlay = gpd.overlay(hex_upgrade, blocks[['block_density', 'geometry']], how='intersection', keep_geom_type=False)
         # overlay = overlay[~overlay['responsible'].notna()]
         # del overlay['responsible']
-        # overlay = gpd.overlay(hex_upgrade, neighborhoods[['neighborhood_density', 'neighborhood_area']], how='intersection', keep_geom_type=False)
+        # overlay = gpd.overlay(hex_upgrade, blocks[['block_density', 'block_area']], how='intersection', keep_geom_type=False)
 
         print('c')
         # area de cada parte resultante del intersection
@@ -919,10 +941,10 @@ class Indicator():
         hex_area_occupied = overlay[['code', 'piece_area']].groupby('code').sum().reset_index().rename(columns={'piece_area': 'hex_area_occupied'})
 
         print('e')
-        # overlay['fraction_area'] = overlay['piece_area'] / overlay['neighborhood_area']
+        # overlay['fraction_area'] = overlay['piece_area'] / overlay['block_area']
         overlay = pd.merge(overlay, hex_area_occupied, how='left', on='code')
         overlay['fraction_in_hex'] = overlay['piece_area'] / overlay['hex_area_occupied']
-        overlay['combined_density'] = overlay['fraction_in_hex'] * overlay['neighborhood_density']
+        overlay['combined_density'] = overlay['fraction_in_hex'] * overlay['block_density']
 
         print('f')
         overlay = overlay[['code', 'combined_density']].groupby('code').sum().reset_index().rename(columns={'combined_density': 'density'})
@@ -1099,9 +1121,8 @@ class Indicator():
             # is for geometry data, but here we make it str in order to serialize it
             # also in case of uploading to database, postgres receives the geometry's wkt as string and automatically converts to wkb
 
-            if not self.geo_output:
-                gdf['wkb'] = gdf['geometry'].apply(lambda g: g.wkb.hex())
-                del gdf['geometry']
+            gdf['wkb'] = gdf['geometry'].apply(lambda g: g.wkb.hex())
+            del gdf['geometry']
         else:
             if 'geometry' in gdf.columns:
                 del gdf['geometry']
@@ -1118,17 +1139,13 @@ class Indicator():
         print('exporting data')
 
         if self.base:
-            output_path = f'/usr/src/app/shared/zone_{self.zone}/amenities_proximity/base{"_geo" if self.geo_output else ""}.json'
+            output_path = f'/usr/src/app/shared/amenities_proximity/base.json'
         else:
-            output_path = f'/usr/src/app/shared/zone_{self.zone}/amenities_proximity/result{self.result}{"_geo" if self.geo_output else ""}.json'
+            output_path = f'/usr/src/app/shared/amenities_proximity/result{self.result}.json'
 
         self.indicator.replace({np.nan: None, np.inf: 999, -np.inf: 999}, inplace=True)
-        if self.geo_output:
-            df_json_str = self.indicator.to_json(indent=4)
-            df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
-        else:
-            df_json = list(self.indicator.T.to_dict().values())
-            # df_json_str = json.dumps(df_json, indent=4)     # now useless as the str of the json is generated below to consider extra data
+        df_json = list(self.indicator.T.to_dict().values())
+        # df_json_str = json.dumps(df_json, indent=4)     # now useless as the str of the json is generated below to consider extra data
 
         result_json = {
             'indicator': df_json,

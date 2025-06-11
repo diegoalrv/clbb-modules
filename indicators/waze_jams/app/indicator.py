@@ -1,10 +1,7 @@
 import pandas as pd
 import geopandas as gpd
-import pandana as pdna
 import numpy as np
-import osmnx as ox
 import json
-import h3
 import matplotlib.pyplot as plt
 from shapely import wkb, STRtree, distance
 from shapely.geometry import Polygon, Point, box
@@ -54,14 +51,24 @@ class Indicator():
         self.cache = os.getenv('cache', 'True') == 'True'
         self.geometry = os.getenv('geometry', 'False') == 'True'
         self.base = os.getenv('base', 'False') == 'True'
-        self.delay = os.getenv('delay', 'False') == 'True'
-        self.pm = os.getenv('pm', 'False') == 'True'
+        self.delay = os.getenv('delay', 'False') == 'True' or os.getenv('delay', 'False') == 'true'
+        self.future = os.getenv('future', 'False') == 'True' or os.getenv('future', 'False') == 'true'
+        self.pm = os.getenv('pm', 'False') == 'True' or os.getenv('pm', 'False') == 'true'
 
         self.vmin = int(os.getenv('vmin', 0))
-        self.vmax = int(os.getenv('vmax', 90))
+        self.vmax = int(os.getenv('vmax', 60))
         # cmap_name = os.getenv('cmap', 'YlOrRd')
-        cmap_name = f'YlOrRd{'' if self.delay else '_r'}'
+        cmap_name = f'YlOrRd{"" if self.delay else "_r"}'
         self.cmap = plt.cm.get_cmap(cmap_name)
+
+        if self.delay:
+            self.vmin = 0
+            self.vmax = 25
+            self.interval_size = 5
+        else:
+            self.vmin = 0
+            self.vmax = 100
+            self.interval_size = 25
 
         try:
             projects = json.loads(os.getenv('projects', '[]'))
@@ -206,14 +213,15 @@ class Indicator():
     def load_data(self):
         print('loading data')
 
-        scenario = self.load_item('scenario', self.scenario)
+        # scenario = self.load_item('scenario', self.scenario)
         # environment_id = scenario['environment']
         # user = self.load_item('user', self.user)
         
-        if not self.base:
-            self.base_indicator = self.load_base_indicator()
+        if not self.base and False:
+            self.waze_jams = self.load_base_indicator()
+            return
         else:
-            path = f'/usr/src/app/shared/assets/waze_jams_subline_grouped_street_of_interest_{'17_to_20' if self.pm else '6_to_9'}.parquet'
+            path = f'/usr/src/app/shared/assets/jams_{"future" if self.future else "base"}_{"pm" if self.pm else "am"}.parquet'
             if os.path.exists(path):
                 try:
                     self.waze_jams = gpd.read_parquet(path)
@@ -225,7 +233,7 @@ class Indicator():
         pass
     
     def load_base_indicator(self):
-        input_path = f'/usr/src/app/shared/waze_jams/base{'_delay' if self.delay else '_speed'}{'_pm' if self.pm else '_am'}.json'
+        input_path = f'/usr/src/app/shared/waze_jams/base{"delay" if self.delay else "speed"}_{"future" if self.future else "base"}_{"pm" if self.pm else "am"}.json'
 
         if not os.path.exists(input_path):
             print(f"El archivo {input_path} no existe.")
@@ -297,10 +305,13 @@ class Indicator():
         print("computing indicator")
 
         jams = self.waze_jams
+        jams.rename(columns={'delay_mean': 'delay', 'speedKMH_mean': 'speed'}, inplace=True)
+
         if self.delay:
-            jams['display_text'] = jams['delay'].apply(lambda x: f"Delay: {round(x)} {'mins' if round(x) != 1 else 'min'}")
+            jams['delay'] = jams['delay'] / 60.0
+            jams['display_text'] = jams['delay'].apply(lambda x: f"Retardo promedio: {round(x)} {'mins' if round(x) != 1 else 'min'}")
         else:
-            jams['display_text'] = jams['speed'].apply(lambda x: f"Speed: {round(x)} {'km/h'}")
+            jams['display_text'] = jams['speed'].apply(lambda x: f"Velocidad promedio: {round(x)} {'km/h'}")
         
         self.indicator = jams
         pass
@@ -315,27 +326,25 @@ class Indicator():
 
         gdf = self.indicator.reset_index()
 
-        if self.bounds:
+        print(gdf)
+
+        if not self.base and self.bounds:
             t = STRtree([self.bounds])
             tmp = pd.DataFrame(index=t.query(gdf['geometry'], predicate='intersects')[0])
             gdf = pd.merge(gdf, tmp, left_index=True, right_index=True)
 
         #################################################################################
-        
-        labels_count = 3
-        # self.vmin = gdf['quality'].min()
-        # self.vmax = gdf['quality'].max()
-        interval_size = (self.vmax - self.vmin) / (labels_count)
 
-        labels = [
-            'Baja calidad',
-            'Media calidad',
-            'Alta calidad'
-        ]
+        interval_size = self.interval_size
+        labels_count = int(self.vmax / interval_size) + 1
+
+        labels = [f'{round(self.vmin + i * interval_size)} - {round(self.vmin + (i + 1) * interval_size)}' for i in range(labels_count)]
+        labels[-1] = f'> {round(self.vmin + (labels_count - 1) * interval_size)}'
 
         labels = [{
+            # 'label': f'{round(self.vmin + i * interval_size)} - {round(self.vmin + (i + 1) * interval_size)}',
             'label': labels[i],
-            'index': labels_count - 1 - i,
+            'index': i,
             'group': i,
             'color': self.get_color(self.vmin + (i + 0.5) * interval_size, self.vmin, self.vmax, 1, self.cmap)
         } for i in range(labels_count)]
@@ -343,69 +352,41 @@ class Indicator():
 
         #################################################################################
 
-        res_histogram_data = gdf[['quality', 'residents']].reset_index(drop=True)
+        column = 'delay' if self.delay else 'speed'
+        print(gdf[column].min())
+        print(gdf[column].max())
 
-        res_histogram_data['group'] = (res_histogram_data['quality'] / interval_size).clip(upper=labels_count - 1).astype(int)
+        histogram_data = gdf[[column]].reset_index(drop=True)
+
+        histogram_data['group'] = (histogram_data[column] / interval_size).clip(upper=labels_count - 1).astype(int)
         
-        res_histogram_data = res_histogram_data.groupby('group').sum()
+        histogram_data = histogram_data['group'].value_counts().reset_index().rename(columns={'count': 'value'})
 
-        im = res_histogram_data['residents'].idxmax()
-        res_histogram_data.loc[im, 'residents'] = np.ceil(res_histogram_data.loc[im, 'residents'])
-        res_histogram_data = res_histogram_data.round()
+        im = histogram_data['value'].idxmax()
+        histogram_data.loc[im, 'value'] = np.ceil(histogram_data.loc[im, 'value'])
+        histogram_data = histogram_data.round()
 
-        res_histogram_data = res_histogram_data.reset_index().rename(columns={'residents': 'value'})
-
-        res_histogram_data = histogram_labels.merge(res_histogram_data, how='left', on='group')
-
-        res_histogram_data.fillna(0, inplace=True)
-        res_histogram_data = res_histogram_data[['label','value','index', 'color']]
-        res_histogram_data['index'] = res_histogram_data['index'].astype(int)
-        res_histogram_data = res_histogram_data.to_dict(orient='records')
-
-        res_histogram = {}
-        res_histogram['index'] = 0
-        res_histogram['type'] = 'histogram'
-        res_histogram['data'] = res_histogram_data
-        res_histogram['positive'] = False
-        res_histogram['name'] = 'Histograma de personas'
-        res_histogram['unit'] = ''
-        res_histogram['unit_short'] = ''
-        res_histogram['value_unit'] = 'personas'
-        res_histogram['value_unit_short'] = 'pers.'
-
-        self.secondary_data.append(res_histogram)
-
-        # Hexagons histogram
-
-        hex_histogram_data = gdf[['quality']].reset_index(drop=True)
-
-        hex_histogram_data['group'] = (hex_histogram_data['quality'] / interval_size).clip(upper=labels_count - 1).astype(int)
+        histogram_data = histogram_labels.merge(histogram_data, how='left', on='group')
         
-        hex_histogram_data = hex_histogram_data['group'].value_counts().reset_index().rename(columns={'count': 'value'})
+        histogram_data.fillna(0, inplace=True)
+        histogram_data = histogram_data[['label', 'value', 'index', 'color']]
+        histogram_data['index'] = histogram_data['index'].astype(int)
+        histogram_data = histogram_data.to_dict(orient='records')
 
-        im = hex_histogram_data['value'].idxmax()
-        hex_histogram_data.loc[im, 'value'] = np.ceil(hex_histogram_data.loc[im, 'value'])
-        hex_histogram_data = hex_histogram_data.round()
+        print(histogram_data)
 
-        hex_histogram_data = histogram_labels.merge(hex_histogram_data, how='left', on='group')
+        histogram = {}
+        histogram['index'] = 1
+        histogram['type'] = 'histogram'
+        histogram['data'] = histogram_data
+        histogram['positive'] = False
+        histogram['name'] = 'Histograma longitud'
+        histogram['unit'] = 'metros'
+        histogram['unit_short'] = 'm'
+        histogram['value_unit'] = 'registros'
+        histogram['value_unit_short'] = 'reg'
 
-        hex_histogram_data.fillna(0, inplace=True)
-        hex_histogram_data = hex_histogram_data[['label','value','index', 'color']]
-        hex_histogram_data['index'] = hex_histogram_data['index'].astype(int)
-        hex_histogram_data = hex_histogram_data.to_dict(orient='records')
-
-        hex_histogram = {}
-        hex_histogram['index'] = 1
-        hex_histogram['type'] = 'histogram'
-        hex_histogram['data'] = hex_histogram_data
-        hex_histogram['positive'] = False
-        hex_histogram['name'] = 'Histograma de hexágonos'
-        hex_histogram['unit'] = ''
-        hex_histogram['unit_short'] = ''
-        hex_histogram['value_unit'] = 'hexágonos'
-        hex_histogram['value_unit_short'] = 'hex'
-
-        self.secondary_data.append(hex_histogram)
+        self.secondary_data.append(histogram)
 
         # Color labels
         color_labels = labels.copy()
@@ -416,292 +397,6 @@ class Indicator():
         legend['name'] = 'Leyenda'
         
         self.secondary_data.append(legend)
-        pass
-
-    # def compute_differences(self):
-    #     # Project percentual change
-        
-    #     left = self.base_indicator.copy()[['code', 'quality', 'urban_space', 'geometry']]
-    #     left = gpd.GeoDataFrame(left, geometry='geometry')
-    #     left.set_crs(4326, inplace=True)
-    #     left.rename(columns={'quality': 'base_quality', 'urban_space': 'base_urban_space'}, inplace=True)
-
-    #     right = self.indicator.copy()[['code', 'quality', 'urban_space', 'project']]
-    #     right.rename(columns={'quality': 'new_quality'}, inplace=True)
-
-    #     print(right[right['project'].notna()])
-
-    #     conclusion = left.merge(right, on='code')
-    #     conclusion['change_quality'] = conclusion['new_quality'] - conclusion['base_quality']
-
-    #     self.conclusion = gpd.GeoDataFrame(conclusion, geometry='geometry')
-    #     self.conclusion.set_crs(4326, inplace=True)
-
-    #     hex_upgrade = conclusion.copy()
-
-    #     print('hex_upgrade')
-    #     print(hex_upgrade[hex_upgrade['change_quality'] != 0])
-
-    #     print('a')
-    #     blocks = self.blocks.copy()
-
-    #     print('b')
-    #     # densidad de poblacion por block
-    #     blocks['block_density'] = blocks['density']
-    #     overlay = gpd.overlay(hex_upgrade, blocks[['block_density', 'geometry']], how='intersection', keep_geom_type=False)
-    #     # overlay = overlay[~overlay['responsible'].notna()]
-    #     # del overlay['responsible']
-    #     # overlay = gpd.overlay(hex_upgrade, blocks[['block_density', 'block_area']], how='intersection', keep_geom_type=False)
-
-    #     print('c')
-    #     # area de cada parte resultante del intersection
-    #     overlay.to_crs(32718, inplace=True)
-    #     overlay['piece_area'] = overlay['geometry'].area
-    #     overlay.to_crs(4326, inplace=True)
-
-    #     print('d')
-    #     # area total de poblacion en cada hexagono
-    #     hex_area_occupied = overlay[['code', 'piece_area']].groupby('code').sum().reset_index().rename(columns={'piece_area': 'hex_area_occupied'})
-
-    #     print('e')
-    #     # overlay['fraction_area'] = overlay['piece_area'] / overlay['block_area']
-    #     overlay = pd.merge(overlay, hex_area_occupied, how='left', on='code')
-    #     overlay['fraction_in_hex'] = overlay['piece_area'] / overlay['hex_area_occupied']
-    #     overlay['combined_density'] = overlay['fraction_in_hex'] * overlay['block_density']
-        
-    #     print('f')
-    #     overlay = overlay[['code', 'combined_density']].groupby('code').sum().reset_index().rename(columns={'combined_density': 'density'})
-        
-    #     print('g')
-    #     max_density = overlay['density'].max()
-    #     overlay['density_multiplier'] = 1.0 - np.power(1.0 - np.log(overlay['density'] + 1) / np.log(max_density + 1), 1.5)
-
-    #     print('h')
-    #     hex_upgrade = pd.merge(hex_upgrade, overlay[['code', 'density_multiplier']], how='left', on='code')
-
-    #     print('j')
-
-    #     if self.bounds:
-    #         t = STRtree([self.bounds])
-    #         tmp = pd.DataFrame(index=t.query(hex_upgrade['geometry'], predicate='intersects')[0])
-    #         hex_upgrade = pd.merge(hex_upgrade, tmp, left_index=True, right_index=True)
-
-    #     # in case a busstop is deleted by a project deletion change, it sets it's responsible project
-    #     def hex_change(row):
-    #         responsible = row['project']
-    #         if row['urban_space'] != row['base_urban_space']:
-    #             if row['change_quality'] > 0:
-    #                 # find project that moved or deleted the bus stop
-    #                 deletions = self.urban_spaces[self.urban_spaces['change_type'] == 'Delete']
-    #                 deletions = deletions[deletions['updating'] == row['base_urban_space']]
-    #                 if len(deletions) > 0:
-    #                     responsible = deletions.iloc[0]['project']
-                        
-    #                 if not responsible:
-    #                     modifications = self.urban_spaces[self.urban_spaces['change_type'] == 'Modify']
-    #                     modifications = modifications[modifications['updating'] == row['base_urban_space']]
-    #                     if len(modifications) > 0:
-    #                         responsible = modifications.iloc[0]['project']
-    #             else:
-    #                 responsible = row['project']
-    #         else:
-    #             if row['change_quality'] != 0:
-    #                 # find project that updated bus stop
-    #                 modifications = self.urban_spaces[self.urban_spaces['change_type'] == 'Modify']
-    #                 modifications = modifications[modifications['updating'] == row['base_urban_space']]
-    #                 if len(modifications) > 0:
-    #                     responsible = modifications.iloc[0]['project']
-    #         return responsible
-
-    #     hex_upgrade['responsible'] = hex_upgrade.apply(hex_change, axis=1)
-
-    #     hex_upgrade['project'] = hex_upgrade['responsible']
-    #     del hex_upgrade['responsible']
-
-    #     base_quality = hex_upgrade['base_quality'].sum()
-
-    #     print('before', hex_upgrade['new_quality'].sum())
-    #     hex_upgrade['new_quality'] = (hex_upgrade['new_quality'] - hex_upgrade['base_quality']) * hex_upgrade['density_multiplier'] + hex_upgrade['base_quality']
-    #     print('after', hex_upgrade['new_quality'].sum())
-
-    #     pro_upgrade = hex_upgrade[['project', 'new_quality', 'base_quality']].reset_index(drop=True)
-    #     pro_upgrade = pro_upgrade.groupby('project', dropna=False)
-    #     pro_upgrade = pro_upgrade.sum()
-    #     pro_upgrade = pro_upgrade.reset_index()
-    #     pro_upgrade['other_new_quality'] = pro_upgrade.apply(lambda row: pro_upgrade[pro_upgrade['project'] != row['project']]['new_quality'].sum(), axis=1)
-    #     pro_upgrade['other_base_quality'] = pro_upgrade.apply(lambda row: pro_upgrade[pro_upgrade['project'] != row['project']]['base_quality'].sum(), axis=1)
-    #     pro_upgrade.dropna(subset=['project'],inplace=True)
-    #     # pro_upgrade['percentage'] = pro_upgrade.apply(lambda row: 100.0 * ((base_quality / (row['new_quality'] + row['other_base_quality'])) - 1.0), axis=1)
-        
-    #     for index, row in pro_upgrade.iterrows():
-    #         print(f'100.0 * (({row["new_quality"]} + {row["other_base_quality"]}) / ({row["base_quality"]} + {row["other_base_quality"]}) - 1.0)')
-
-    #     pro_upgrade['percentage'] = pro_upgrade.apply(lambda row: 100.0 * ((row['new_quality'] + row['other_base_quality']) / (row['base_quality'] + row['other_base_quality']) - 1.0), axis=1)
-
-    #     df_list = pd.DataFrame({'project': list(self.counting_projects)})
-    #     result = pd.merge(df_list, pro_upgrade, on='project', how='left')
-    #     result['percentage'] = round(result['percentage'].fillna(0), 2)
-    #     result = result[['project', 'percentage']]
-    #     result['project_name'] = result['project'].apply(lambda project: self.projects_name[project])
-    #     result.rename(columns={'project_name': 'label', 'percentage': 'value'}, inplace=True)
-    #     improvement_percentage_data = result.to_dict(orient='records')
-
-    #     improvement_percentage = {}
-    #     improvement_percentage['index'] = 1
-    #     improvement_percentage['type'] = 'project_change'
-    #     improvement_percentage['data'] = improvement_percentage_data
-    #     improvement_percentage['positive'] = True
-    #     improvement_percentage['name'] = 'Mejora porcentual'
-    #     improvement_percentage['unit'] = '%'
-    #     improvement_percentage['unit_short'] = '%'
-
-    #     print(improvement_percentage)
-
-    #     self.secondary_data.append(improvement_percentage)
-    #     pass
-
-    def compute_differences(self):
-        # Project percentual change
-        
-        left = self.base_indicator.copy()[['code', 'quality', 'urban_space', 'geometry']]
-        left = gpd.GeoDataFrame(left, geometry='geometry')
-        left.set_crs(4326, inplace=True)
-        left.rename(columns={'quality': 'base_quality', 'urban_space': 'base_urban_space'}, inplace=True)
-
-        right = self.indicator.copy()[['code', 'quality', 'project', 'urban_space']]
-        right.rename(columns={'quality': 'new_quality'}, inplace=True)
-
-        conclusion = left.merge(right, on='code')
-        conclusion['change_quality'] = conclusion['new_quality'] - conclusion['base_quality']
-
-        self.conclusion = gpd.GeoDataFrame(conclusion, geometry='geometry')
-        self.conclusion.set_crs(4326, inplace=True)
-
-        hex_upgrade = conclusion.copy()
-
-        print('a')
-        blocks = self.blocks.copy()
-
-        # area de la poblacion
-        blocks.to_crs(32718, inplace=True)
-        blocks['block_area'] = blocks['geometry'].area
-        blocks.to_crs(4326, inplace=True)
-
-        print('b')
-
-        # densidad de poblacion por block
-        blocks['block_density'] = blocks['density']
-        overlay = gpd.overlay(hex_upgrade, blocks[['block_density', 'geometry']], how='intersection', keep_geom_type=False)
-        # overlay = overlay[~overlay['responsible'].notna()]
-        # del overlay['responsible']
-        # overlay = gpd.overlay(hex_upgrade, blocks[['block_density', 'block_area']], how='intersection', keep_geom_type=False)
-
-        print('c')
-        # area de cada parte resultante del intersection
-        overlay.to_crs(32718, inplace=True)
-        overlay['piece_area'] = overlay['geometry'].area
-        overlay.to_crs(4326, inplace=True)
-
-        print('d')
-        # area total de poblacion en cada hexagono
-        hex_area_occupied = overlay[['code', 'piece_area']].groupby('code').sum().reset_index().rename(columns={'piece_area': 'hex_area_occupied'})
-
-        print('e')
-        # overlay['fraction_area'] = overlay['piece_area'] / overlay['block_area']
-        overlay = pd.merge(overlay, hex_area_occupied, how='left', on='code')
-        overlay['fraction_in_hex'] = overlay['piece_area'] / overlay['hex_area_occupied']
-        overlay['combined_density'] = overlay['fraction_in_hex'] * overlay['block_density']
-        
-        print('f')
-        overlay = overlay[['code', 'combined_density']].groupby('code').sum().reset_index().rename(columns={'combined_density': 'density'})
-        
-        print('g')
-        max_density = overlay['density'].max()
-        overlay['density_multiplier'] = 1.0 - np.power(1.0 - np.log(overlay['density'] + 1) / np.log(max_density + 1), 1.5)
-
-        print('h')
-        hex_upgrade = pd.merge(hex_upgrade, overlay[['code', 'density_multiplier']], how='left', on='code')
-
-        print('j')
-
-        if self.bounds:
-            t = STRtree([self.bounds])
-            tmp = pd.DataFrame(index=t.query(hex_upgrade['geometry'], predicate='intersects')[0])
-            hex_upgrade = pd.merge(hex_upgrade, tmp, left_index=True, right_index=True)
-
-        # in case a busstop is deleted by a project deletion change, it sets it's responsible project
-        def hex_change(row):
-            responsible = row['project']
-            if row['urban_space'] != row['base_urban_space']:
-                if row['change_quality'] > 0:
-                    # find project that moved or deleted the bus stop
-                    deletions = self.urban_spaces[self.urban_spaces['change_type'] == 'Delete']
-                    deletions = deletions[deletions['updating'] == row['base_urban_space']]
-                    if len(deletions) > 0:
-                        responsible = deletions.iloc[0]['project']
-                        
-                    if not responsible:
-                        modifications = self.urban_spaces[self.urban_spaces['change_type'] == 'Modify']
-                        modifications = modifications[modifications['updating'] == row['base_urban_space']]
-                        if len(modifications) > 0:
-                            responsible = modifications.iloc[0]['project']
-                else:
-                    responsible = row['project']
-            else:
-                if row['change_quality'] != 0:
-                    # find project that updated bus stop
-                    modifications = self.urban_spaces[self.urban_spaces['change_type'] == 'Modify']
-                    modifications = modifications[modifications['updating'] == row['base_urban_space']]
-                    if len(modifications) > 0:
-                        responsible = modifications.iloc[0]['project']
-            return responsible
-
-        hex_upgrade['responsible'] = hex_upgrade.apply(hex_change, axis=1)
-
-        hex_upgrade['project'] = hex_upgrade['responsible']
-        del hex_upgrade['responsible']
-
-        base_quality = hex_upgrade['base_quality'].sum()
-
-        print('before', hex_upgrade['new_quality'].sum())
-        hex_upgrade['new_quality'] = (hex_upgrade['new_quality'] - hex_upgrade['base_quality']) * hex_upgrade['density_multiplier'] + hex_upgrade['base_quality']
-        print('after', hex_upgrade['new_quality'].sum())
-
-        pro_upgrade = hex_upgrade[['project', 'new_quality', 'base_quality']].reset_index(drop=True)
-        pro_upgrade = pro_upgrade.groupby('project', dropna=False)
-        pro_upgrade = pro_upgrade.sum()
-        pro_upgrade = pro_upgrade.reset_index()
-        pro_upgrade['other_new_quality'] = pro_upgrade.apply(lambda row: pro_upgrade[pro_upgrade['project'] != row['project']]['new_quality'].sum(), axis=1)
-        pro_upgrade['other_base_quality'] = pro_upgrade.apply(lambda row: pro_upgrade[pro_upgrade['project'] != row['project']]['base_quality'].sum(), axis=1)
-        pro_upgrade.dropna(subset=['project'],inplace=True)
-        print(pro_upgrade)
-        # pro_upgrade['percentage'] = pro_upgrade.apply(lambda row: 100.0 * ((base_quality / (row['new_quality'] + row['other_base_quality'])) - 1.0), axis=1)
-        
-        for index, row in pro_upgrade.iterrows():
-            print(f'100.0 * (({row["new_quality"]} + {row["other_base_quality"]}) / ({row["base_quality"]} + {row["other_base_quality"]}) - 1.0)')
-
-        pro_upgrade['percentage'] = pro_upgrade.apply(lambda row: 100.0 * ((row['new_quality'] + row['other_base_quality']) / (row['base_quality'] + row['other_base_quality']) - 1.0), axis=1)
-
-        df_list = pd.DataFrame({'project': list(self.counting_projects)})
-        result = pd.merge(df_list, pro_upgrade, on='project', how='left')
-        result['percentage'] = round(result['percentage'].fillna(0), 2)
-        result = result[['project', 'percentage']]
-        result['project_name'] = result['project'].apply(lambda project: self.projects_name[project])
-        result.rename(columns={'project_name': 'label', 'percentage': 'value'}, inplace=True)
-        improvement_percentage_data = result.to_dict(orient='records')
-
-        improvement_percentage = {}
-        improvement_percentage['index'] = 1
-        improvement_percentage['type'] = 'project_change'
-        improvement_percentage['data'] = improvement_percentage_data
-        improvement_percentage['positive'] = True
-        improvement_percentage['name'] = 'Mejora porcentual'
-        improvement_percentage['unit'] = '%'
-        improvement_percentage['unit_short'] = '%'
-
-        print(improvement_percentage)
-
-        self.secondary_data.append(improvement_percentage)
         pass
 
     def set_border(self, border_type):
@@ -722,14 +417,7 @@ class Indicator():
     def adjust_backend_format(self):
         gdf = self.indicator
         gdf['value'] = gdf['delay'] if self.delay else gdf['speed']
-
-        if self.delay:
-            vmin = 0
-            vmax = 90
-        else:
-            vmin = 5
-            vmax = 25
-        gdf['color'] = gdf.apply(lambda v: self.get_color(v['value'], vmin, vmax, 1, self.cmap), axis=1)
+        gdf['color'] = gdf.apply(lambda v: self.get_color(v['value'], self.vmin, self.vmax, 1, self.cmap), axis=1)
 
         gdf = gdf[['value', 'color', 'display_text', 'geometry']]
 
@@ -757,7 +445,7 @@ class Indicator():
         print('exporting data')
 
         if self.base:
-            output_path = f'/usr/src/app/shared/waze_jams/base{'_delay' if self.delay else '_speed'}{'_pm' if self.pm else '_am'}.json'
+            output_path = f'/usr/src/app/shared/waze_jams/base{"delay" if self.delay else "speed"}_{"future" if self.future else "base"}_{"pm" if self.pm else "am"}.json'
 
         # self.indicator = self.indicator.replace({np.inf: 999, -np.inf: 999, np.nan: None})
         self.indicator.replace({np.nan: None}, inplace=True)
@@ -771,6 +459,8 @@ class Indicator():
 
         if len(self.secondary_data) > 0:
             result_json['resume'] = self.secondary_data
+
+        result_json['type'] = 'linestring'
 
         if self.bounds and self.bounds_border:
             result_json['bounds_border'] = self.bounds_border.wkb.hex()
@@ -817,7 +507,7 @@ class Indicator():
                     self.execute_process()
 
                 # self.set_border('box')
-                # self.compute_histogram()
+                self.compute_histogram()
 
                 # if not self.base and len(self.projects) > 0 and not self.base_indicator.empty:
                 #     self.compute_differences()

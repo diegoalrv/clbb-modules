@@ -6,13 +6,37 @@ import osmnx as ox
 import json
 import h3
 import matplotlib.pyplot as plt
-from shapely import wkb, intersects, STRtree
+from shapely import wkb, STRtree, distance
 from shapely.geometry import MultiPolygon, Polygon, LineString, Point, box
 from shapely.prepared import prep
 
 import os
 import requests
 import time
+
+from functools import partial
+from multiprocessing import Pool, cpu_count
+
+# This function needs to be at the module level to be easily picklable by multiprocessing
+def get_projects_for_path_worker(node_id_list_and_map):
+    """
+    Helper function designed for multiprocessing.
+    It unpacks its arguments because pool.map only passes one iterable of arguments.
+    """
+    node_id_list, edge_map = node_id_list_and_map # Unpack arguments
+    
+    if node_id_list is None or not isinstance(node_id_list, (list, np.ndarray)) or len(node_id_list) < 2:
+        return []
+    
+    projects_in_path = set()
+    for i in range(len(node_id_list) - 1):
+        u_node = node_id_list[i]
+        v_node = node_id_list[i+1]
+        project = edge_map.get((u_node, v_node)) # Dictionary lookup is O(1) average
+        if project is not None:
+            projects_in_path.add(project)
+    return list(projects_in_path)
+
 
 class Indicator():
     def __init__(self):
@@ -135,7 +159,7 @@ class Indicator():
 
                 delta_df = pd.DataFrame.from_records(project_entry['data'])
                 if not delta_df.empty:
-                    if project_entry['project'] not in self.counting_projects:
+                    if project_entry['project'] not in self.counting_projects and resource in ['greenarea', 'street']:
                         self.counting_projects.add(project_entry['project'])
 
                     delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
@@ -177,7 +201,7 @@ class Indicator():
 
                     delta_df = pd.DataFrame.from_records(project_entry['data'])
                     if not delta_df.empty:
-                        if project_entry['project'] not in self.counting_projects:
+                        if project_entry['project'] not in self.counting_projects and resource in ['greenarea', 'street']:
                             self.counting_projects.add(project_entry['project'])
 
                         delta_df['geometry'] = delta_df['wkb'].apply(lambda s: wkb.loads(bytes.fromhex(s)))
@@ -243,7 +267,8 @@ class Indicator():
             self.projects_name = {p['id']: p['name'] for p in scenario['imported_projects']}
             self.counting_projects = set()
 
-            self.base_indicator = self.load_base_indicator()
+            self.base_grid_points_with_project = self.load_base_indicator()
+            # self.base_indicator = self.load_base_indicator()
 
             # if not self.base_indicator.empty and len(self.projects) == 0:
             #     self.indicator = self.base_indicator
@@ -252,7 +277,7 @@ class Indicator():
         self.green_areas, _, self.deleted_green_areas = self.load_resource('greenarea', environment_id, user['id'], 'name,public_space_type')
         print('greenareas:', len(self.green_areas))
 
-        self.blocks, _, self.deleted_blocks = self.load_resource('block', environment_id, user['id'], 'density')
+        self.blocks, _, _ = self.load_resource('block', environment_id, user['id'], 'density')
         print('blocks:', len(self.blocks))
 
         self.edges, _, _ = self.load_resource('street', environment_id, user['id'], 'src,dst,length,one_way')
@@ -314,6 +339,14 @@ class Indicator():
         self.grid_points = grid_points.set_crs(32718).to_crs(4326)
         print('grid_points:', len(self.grid_points))
 
+        # slope_edges = self.edges.copy()
+        # slope_edges['length'] = slope_edges.to_crs(32718).geometry.length
+        # speed_m_per_min = 4 * 1000 / 60  # 4 km/h
+        # mins = slope_edges['length'] / speed_m_per_min
+        # slope_edges['speed'] = speed_m_per_min
+        # slope_edges['mins'] = mins
+
+        # a, b = self.nodes_edges_to_net_format(self.nodes, slope_edges)
         a, b = self.nodes_edges_to_net_format(self.nodes, self.edges)
         print('a:', len(a))
         print('b:', len(b))
@@ -339,7 +372,7 @@ class Indicator():
             df_json_str = file.read()
 
         base_indicator_json = json.loads(df_json_str)
-        base_indicator = pd.DataFrame.from_records(base_indicator_json['indicator'])
+        base_indicator = pd.DataFrame.from_records(base_indicator_json['points'])
         base_indicator['geometry'] = base_indicator['wkb'].apply(lambda g: wkb.loads(g))
         del base_indicator['wkb']
         base_indicator = gpd.GeoDataFrame(base_indicator, geometry='geometry')
@@ -423,7 +456,8 @@ class Indicator():
             nodes_gdf['lat'].astype(float),
             edges_gdf['from'].astype(int),
             edges_gdf['to'].astype(int),
-            edges_gdf[['length']]
+            edges_gdf[['length']],
+            twoway=False
         )
             # Restaura la salida estándar original
             # os.dup2(old_stdout, 1)
@@ -437,23 +471,6 @@ class Indicator():
         area_of_interest = gpd.GeoDataFrame.from_features([data])
         area_of_interest = area_of_interest.set_crs(4326)
         return area_of_interest
-    
-    def load_h3_cells(self):
-        input_path = f'/usr/src/app/shared/h3_cells/resolution_{self.resolution}.json'
-        print(f'opening path {input_path}')
-
-        if os.path.exists(input_path):
-            with open(input_path, "r") as file:
-                h3_cells_str = file.read()
-
-            h3_cells_json = json.loads(h3_cells_str)
-            h3_cells = pd.DataFrame.from_records(h3_cells_json)
-            h3_cells['geometry'] = h3_cells['wkb'].apply(lambda g: wkb.loads(bytes.fromhex(g)))
-            h3_cells = gpd.GeoDataFrame(h3_cells, geometry='geometry')
-            h3_cells = h3_cells.set_crs(4326)
-            return h3_cells
-    
-        return None
     
     def load_grid_points(self):
         grid_points = None
@@ -498,20 +515,7 @@ class Indicator():
     def execute_process(self):
         print('computing indicator 2')
 
-        def distance_between_point_xy(row):
-            origin_x = row['geometry'].x
-            origin_y = row['geometry'].y
-            destination_x = row['x']
-            destination_y = row['y']
-            return ox.distance.great_circle(origin_y, origin_x, destination_y, destination_x)
-
-        #####################################################
-
-        def distance_between_points(a, b):
-            return ox.distance.great_circle(a.y, a.x, b.y, b.x)
-
-        #####################################################
-
+        print('A')
         green_areas = self.green_areas
 
         def sample_boundary_points(geometry, distance_interval=10):
@@ -545,8 +549,9 @@ class Indicator():
         # green_areas['boundary_points'] = green_areas['geometry'].apply(lambda g: sample_boundary_points(g, 20))
 
         # all_points = [point for points in green_areas['boundary_points'] for point in points]
-        # points_gdf = gpd.GeoDataFrame(geometry=all_points, crs=green_areas.crs)
+        # points = gpd.GeoDataFrame(geometry=all_points, crs=green_areas.crs)
 
+        print('B')
         all_points_with_refs = []
 
         for idx, row in green_areas.iterrows():
@@ -555,141 +560,314 @@ class Indicator():
                 all_points_with_refs.append({'geometry': point, 'green_area': row['id']})
 
         # Convert to GeoDataFrame
-        points_gdf = gpd.GeoDataFrame(all_points_with_refs, crs=green_areas.crs)
-
-        pois = points_gdf.to_crs(4326)
-
-        #####################################################
-
-        t = STRtree([self.area['geometry'].iloc[0]])
-        tmp = pd.DataFrame(index=t.query(pois['geometry'], predicate='intersects')[0])
-        pois = pd.merge(pois, tmp, left_index=True, right_index=True)
+        points = gpd.GeoDataFrame(all_points_with_refs, crs=green_areas.crs)
+        points = points.to_crs(4326)
+        points = points[points.within(self.area['geometry'].iloc[0])]
+        points = points.reset_index(drop=True)
 
         #####################################################
 
-        pois['closest_node_end'] = self.net.get_node_ids(pois['geometry'].x, pois['geometry'].y)
-
-        #####################################################
-
-        pois = pd.merge(pois, self.net.nodes_df, how='left', left_on='closest_node_end', right_index=True)
-
-        #####################################################
-
-        pois['distance_to_closest_node_end'] = pois.apply(distance_between_point_xy, axis=1)
-        del pois['x']
-        del pois['y']
-
-        #####################################################
-
-        # not used (?
-        # node_pois = pois[['closest_node_end', 'distance_to_closest_node_end']]
-        # node_pois = node_pois.groupby('closest_node_end')
-        # node_pois = node_pois.apply(lambda group: group['distance_to_closest_node_end'].min())
-        # node_pois = node_pois.reset_index()
-        # node_pois = node_pois.rename(columns={'closest_node_end': 'id', 'distance_to_closest_node_end': 'distance_to_green_area'})
-
-        # node_pois = pd.merge(self.nodes, node_pois, how='right', left_index=True, right_on='id')
-
-        #####################################################
-
-        # t = STRtree(self.green_areas.to_crs(32718)['geometry'])
-        # q = t.query_nearest(self.nodes.to_crs(32718)['geometry'], return_distance=True)
-        # self.nodes['nearest'] = q[0][1]
-        # self.nodes['distance'] = q[1]
-
-        #####################################################
-        
-        max_distance = 25000
-        num_pois = 1
-        category = 'green_areas'
-
-        self.net.set_pois(category=category, maxdist = 10000000, maxitems=num_pois, x_col=pois['geometry'].x, y_col=pois['geometry'].y, )
-        accessibility = self.net.nearest_pois(distance = 10000000, category=category, num_pois=num_pois, include_poi_ids=True)
-        accessibility[1] = accessibility[1].apply(lambda v: max_distance if v > max_distance else v)
-        accessibility.rename(columns={1: 'distance_to_closest_green_area', 'poi1': 'poi'}, inplace=True)
-
-        accessibility = accessibility.reset_index()
-
-        #####################################################
-
-        tmp_pois = pois.reset_index()[['index', 'green_area']]
-        tmp_pois.rename(columns={'index': 'poi'}, inplace=True)
-
-        accessibility = pd.merge(accessibility, tmp_pois[['poi', 'green_area']], how='left', on='poi')
-        accessibility['green_area'] = accessibility['green_area'].fillna(np.nan)
-        
-        #####################################################
-
+        print('C')
         tmp_green_areas = green_areas[['id', 'project']]
         tmp_green_areas.rename(columns={'id': 'green_area'}, inplace=True)
 
-        accessibility = pd.merge(accessibility, tmp_green_areas[['green_area', 'project']], how='left', on='green_area')
-        accessibility['project'] = accessibility['project'].fillna(np.nan)
-
-        accessibility = accessibility.set_index('id')
+        points = pd.merge(points, tmp_green_areas[['green_area', 'project']], how='left', on='green_area')
+        points['project'] = points['project'].fillna(np.nan)
+        points['id'] = points.index
 
         #####################################################
 
+        print("a 1")
+        # edges within 15m of a bus stop
+        t = STRtree(points.to_crs(32718).geometry)
+        q = t.query_nearest(self.edges.to_crs(32718).geometry, max_distance=25000, return_distance=True)
+        tmp = pd.DataFrame(data={'edge': q[0][0], 'point_index': q[0][1], 'distance': q[1]})
+        edges_within_15m = self.edges.drop(columns='project').merge(tmp, 'right', left_index=True, right_on='edge')
+        edges_within_15m = edges_within_15m.merge(points[['id', 'green_area', 'project']].rename(columns={'id': 'point'}), 'left', left_on='point_index', right_index=True)
+        edges_within_15m = edges_within_15m.drop(columns='point_index')
+        print(edges_within_15m)
+
+        print("a 2")
+        # nodes of edges within 15m of a bus stop
+        nodes_edge_within_15m = pd.concat([edges_within_15m[['src', 'point', 'green_area', 'project']].rename(columns={'src': 'id'}), edges_within_15m[['dst', 'point', 'green_area', 'project']].rename(columns={'dst': 'id'})])
+        print(edges_within_15m)
+        nodes_edge_within_15m = nodes_edge_within_15m.sort_values('id').drop_duplicates().reset_index(drop=True)
+
+        print("a 3")
+        # nodes within 15m of a bus stop
+        # and the distances
+        nodes_edge_within_15m = nodes_edge_within_15m[['id', 'point', 'green_area', 'project']].merge(self.nodes.to_crs(32718)[['id', 'geometry']], 'left', 'id')
+        nodes_edge_within_15m = nodes_edge_within_15m.merge(points.to_crs(32718)[['id', 'geometry']].rename(columns={'id': 'point', 'geometry': 'point_geometry'}), 'left', 'point')
+        nodes_edge_within_15m = gpd.GeoDataFrame(nodes_edge_within_15m, geometry='geometry', crs=32718)
+        nodes_edge_within_15m['edge_distance_to_point'] = distance(nodes_edge_within_15m.to_crs(32718).geometry, nodes_edge_within_15m.to_crs(32718)['point_geometry'])
+
+        print("a 4")
+        # nodes of edges within 15m of a bus stop
+        # and their closest bus stop
+        nodes_edge_within_15m = nodes_edge_within_15m.sort_values(['id', 'edge_distance_to_point']).drop_duplicates('id', keep='first')
+        nodes_edge_within_15m.reset_index(drop=True, inplace=True)
+
+        print("a 5")
+        nodes_edge_within_15m = nodes_edge_within_15m.rename(columns={'point': 'edge_point', 'distance_to_point': 'edge_distance_to_point', 'green_area': 'edge_green_area', 'project': 'edge_project'})
+        speed_m_per_min = 4 * 1000 / 60  # 4 km/h
+        nodes_edge_within_15m['edge_mins'] = nodes_edge_within_15m['edge_distance_to_point'] / speed_m_per_min
+
+        print("a 6")
+        nodes_edge_within_15m = nodes_edge_within_15m[['id', 'edge_point', 'edge_distance_to_point', 'edge_mins', 'edge_green_area', 'edge_project']]
+
+        print("a 7")
+        # bus stops and their closest node
+        points['node_id'] = self.net.get_node_ids(points.geometry.x, points.geometry.y)
+        points_with_nearest_node = pd.merge(points, self.net.nodes_df, left_on='node_id', right_index=True)
+
+        origin_coords = np.stack([points_with_nearest_node.geometry.x.values, points_with_nearest_node.geometry.y.values], axis=1)
+        dest_coords = np.stack([points_with_nearest_node["x"].values, points_with_nearest_node["y"].values], axis=1)
+
+        points_with_nearest_node["distance_to_nearest_node"] = np.array([
+            ox.distance.great_circle(*o[::-1], *d[::-1]) for o, d in zip(origin_coords, dest_coords)
+        ])
+
+        points_with_nearest_node = points_with_nearest_node[['node_id', 'id', 'distance_to_nearest_node', 'green_area', 'project']]
+
+        print("a 8")
+        right = points_with_nearest_node.rename(columns={'id': 'net_point', 'distance_to_nearest_node': 'net_distance_to_point', 'green_area': 'net_green_area', 'project': 'net_project'})
+        right = right.rename(columns={'node_id': 'id'})
+        right = right.sort_values(['id', 'net_distance_to_point']).drop_duplicates('id', keep='first')
+        right = right.reset_index(drop=True)
+
+        print("a 9")
+        node_pois = nodes_edge_within_15m.merge(right, 'outer', on='id')
+
+        # Conditions
+        edge_nan = node_pois['edge_distance_to_point'].isna()
+        net_nan = node_pois['net_distance_to_point'].isna()
+        edge_better = node_pois['edge_distance_to_point'] < node_pois['net_distance_to_point']
+
+        # Calculate distance_to_point
+        node_pois['distance_to_point'] = np.where(
+            edge_nan, node_pois['net_distance_to_point'],       # if edge is NaN, use net
+            np.where(net_nan, node_pois['edge_distance_to_point'],  # if net is NaN, use edge
+                    np.where(edge_better, node_pois['edge_distance_to_point'], node_pois['net_distance_to_point']))  # else pick min
+        )
+
+        # Calculate green_area
+        node_pois['green_area'] = np.where(
+            edge_nan, node_pois['net_green_area'],
+            np.where(net_nan, node_pois['edge_green_area'],
+                    np.where(edge_better, node_pois['edge_green_area'], node_pois['net_green_area']))
+        )
+
+        # Calculate project
+        node_pois['project'] = np.where(
+            edge_nan, node_pois['net_project'],
+            np.where(net_nan, node_pois['edge_project'],
+                    np.where(edge_better, node_pois['edge_project'], node_pois['net_project']))
+        )
+
+        print("a 10")
+        node_pois = node_pois[['id', 'distance_to_point', 'green_area', 'project']]
+        
+        node_pois = node_pois.merge(self.nodes[['id', 'geometry']], 'left', 'id')
+        node_pois = gpd.GeoDataFrame(node_pois, geometry='geometry')
+        node_pois['x'] = node_pois['geometry'].x
+        node_pois['y'] = node_pois['geometry'].y
+
+        #####################################################
+
+        print('E')
+        
+        max_distance = 25000  # in meters
+        max_mins = 375  # in minutes
+        num_pois = 1
+
+        node_pois = node_pois.set_index("id") # so nearest_pois give these ids instead of 0 to len
+        print(node_pois)
+
+        category = "node_pois"
+        self.net.set_pois(
+            category=category,
+            maxdist = 100000,
+            maxitems=num_pois,
+            x_col=node_pois.geometry.x,
+            y_col=node_pois.geometry.y,
+        )
+
+        accessibility = self.net.nearest_pois(
+            distance = 100000,
+            category=category,
+            num_pois=num_pois,
+            include_poi_ids=True,
+        )
+
+        accessibility[1] = accessibility[1].apply(lambda v: max_distance if v > max_distance else v)
+        accessibility.rename(columns={1: 'distance_to_mid_node', 'poi1': 'mid_node'}, inplace=True)
+        accessibility = accessibility.reset_index()
+
+        print("a 11")
+        accessibility = accessibility.merge(nodes_edge_within_15m.rename(columns={'id': 'mid_node'}), 'left', on='mid_node')
+        accessibility['distance'] = accessibility['distance_to_mid_node'] + accessibility['edge_distance_to_point']
+        accessibility['project'] = accessibility['edge_project']
+        accessibility['point'] = accessibility['edge_point']
+        accessibility['green_area'] = accessibility['edge_green_area']
+        accessibility = accessibility[['id', 'distance', 'point', 'green_area', 'project', 'mid_node']]
+
+        #####################################################
+
+        print('G')
         grid_points = self.grid_points
+        grid_points['node_id'] = self.net.get_node_ids(grid_points.geometry.x, grid_points.geometry.y)
 
-        grid_points['closest_node'] = self.net.get_node_ids(grid_points['geometry'].x, grid_points['geometry'].y)
-        grid_points = pd.merge(grid_points, self.net.nodes_df, how='left', left_on='closest_node', right_index=True)
+        print('G 1')
+        grid_with_nearest_node = pd.merge(grid_points, self.net.nodes_df, left_on='node_id', right_index=True)
 
-        grid_points['distance_to_closest_node'] = grid_points.apply(distance_between_point_xy, axis=1)
-        del grid_points['x']
-        del grid_points['y']
+        print('G 2')
+        origin_coords = np.stack([grid_with_nearest_node.geometry.x.values, grid_with_nearest_node.geometry.y.values], axis=1)
+        dest_coords = np.stack([grid_with_nearest_node["x"].values, grid_with_nearest_node["y"].values], axis=1)
 
-        #####################################################
+        print('G 3')
+        grid_with_nearest_node["distance_to_nearest_node"] = np.array([
+            ox.distance.great_circle(*o[::-1], *d[::-1]) for o, d in zip(origin_coords, dest_coords)
+        ])
+
+        print('G 4')
+        accessibility = pd.merge(grid_with_nearest_node, accessibility.rename(columns={'id': 'node_id'}), on='node_id')
+        accessibility['distance'] = accessibility['distance_to_nearest_node'] + accessibility['distance']
+
+        print('G 5')
+        grid_points = accessibility.copy()
+
+        grid_points = grid_points[['id', 'distance', 'distance_to_nearest_node', 'point', 'green_area', 'project', 'node_id', 'mid_node', 'geometry']]
+        grid_points = grid_points.rename(columns={'node_id': 'start_node', 'mid_node': 'end_node'})
+
+        #############################################################################################
+
+        print('H')
+        tmp = grid_points.drop_duplicates(['start_node', 'end_node'])
+        print('H 1')
+
+        tmp = tmp.dropna(subset='start_node').dropna(subset='end_node')
+        tmp['start_node'] = tmp['start_node'].astype(int)
+        tmp['end_node'] = tmp['end_node'].astype(int)
+
+        print('H 2')
+        tmp['paths_node_ids'] = self.net.shortest_paths(tmp['start_node'], tmp['end_node'])
+
+        print('H 3')
+        if isinstance(tmp['paths_node_ids'], pd.Series):
+            tmp['paths_node_ids'] = tmp['paths_node_ids'].tolist()
+
+        print('H 4')
+        edge_to_project_map = dict(zip(zip(self.edges['src'], self.edges['dst']), self.edges['project']))
+
+        print('H 5')
+        # --- Multiprocessing Step 3 ---
+        num_cores = cpu_count()
+        args_for_pool = [(path_list, edge_to_project_map) for path_list in tmp['paths_node_ids']]
+
+        print('I')
+        grid_point_path_projects_mp = []
+        if tmp['paths_node_ids'].size > 0:
+            try:
+                # Attempt to get a multiprocessing context. 'spawn' is safer cross-platform
+                # if you're concerned about global state, but 'fork' (default on Unix) is faster.
+                # import multiprocessing as mp
+                # ctx = mp.get_context('spawn') # or 'fork' or 'forkserver'
+                # with ctx.Pool(processes=max(1, num_cores - 1)) as pool:
+
+                with Pool(processes=max(1, num_cores - 1)) as pool:
+                    grid_point_path_projects_mp = pool.map(get_projects_for_path_worker, args_for_pool)
+            except RuntimeError as e:
+                if "can't start new thread" in str(e) or "freeze_support" in str(e):
+                    print("Multiprocessing error (often related to __main__ guard or environment).")
+                    print("Ensure the main script entry point uses 'if __name__ == \"__main__\":'")
+                    print("Falling back to single-core processing for this step.")
+                    # Fallback to single core
+                    grid_point_path_projects_mp = [get_projects_for_path_worker(arg_tuple) for arg_tuple in args_for_pool]
+                else:
+                    raise # Re-raise other RuntimeError
+        else:
+            grid_point_path_projects_mp = []
+
+
+        print('J')
+        tmp['path_projects_mp'] = grid_point_path_projects_mp
         
-        right = accessibility[['green_area', 'project', 'distance_to_closest_green_area']]
-        grid_points = pd.merge(grid_points, right, how='left', left_on='closest_node', right_index=True)
+        # Your existing logic for filtering and merging
+        # Ensure 'id' is present and is the correct column for merging
+        if 'id' in tmp.columns and 'id' in grid_points.columns:
+            # Create a DataFrame from tmp with 'id' and 'path_projects_mp'
+            # Make sure tmp has an 'id' column that corresponds to mins's 'id'
+            # This assumes tmp['paths_node_ids'] was in the same order as (a subset of) mins
+            # If tmp is a direct derivative of mins and shares its index, it's easier.
+            
+            # A safer way to align if tmp['paths_node_ids'] comes from mins:
+            # Assuming tmp was created with an index matching mins
+            # (e.g., if tmp is mins or a slice of mins, or has a column that can map back to mins.index)
+            
+            # If tmp has an 'id' column that matches 'mins':
+            project_results_df = pd.DataFrame({
+                'id': tmp['id'], # Assuming tmp has an 'id' column
+                'path_projects_mp': grid_point_path_projects_mp
+            })
+            
+            # Filter results
+            right = project_results_df[project_results_df['path_projects_mp'].apply(len) > 0]
+            
+            # Merge
+            # Using left merge to keep all rows from self.grid_point_projects (which is mins[['id']])
+            # and add path_projects_mp where available.
+            self.grid_point_projects = grid_points[['id']].merge(right, how='left', on='id')
+            
+            # Fill NaN in 'path_projects_mp' (for rows in mins that had no projects or no path) with empty lists
+            if 'path_projects_mp' in self.grid_point_projects.columns:
+                 self.grid_point_projects['path_projects_mp'] = self.grid_point_projects['path_projects_mp'].apply(
+                    lambda x: x if isinstance(x, list) else []
+                )
+            else: # If merge resulted in no path_projects_mp column (e.g. 'right' was empty)
+                self.grid_point_projects['path_projects_mp'] = [[] for _ in range(len(self.grid_point_projects))]
 
-        print('grid_points:', grid_points)
-        
-        #####################################################
+        else:
+            print("Warning: 'id' column not found in tmp or mins for merging project paths.")
+            # Handle the case where merge cannot be performed as expected
+            self.grid_point_projects = grid_points[['id']].copy() # Or however you initialize it
+            self.grid_point_projects['path_projects_mp'] = [[] for _ in range(len(self.grid_point_projects))]
 
+        #############################################################################################
+
+        print('K')
         speed_kmh = 4  #km/h
         speed = speed_kmh * 1000.0 / 60.0 # m/min
-        print(len(grid_points[grid_points['distance_to_closest_node'].isna()]))
-        print(len(grid_points[grid_points['distance_to_closest_green_area'].isna()]))
-        grid_points['total_distance'] = grid_points['distance_to_closest_node'] + grid_points['distance_to_closest_green_area']
-        print(len(grid_points[grid_points['total_distance'].isna()]))
-        
-        grid_points['mins'] = grid_points['total_distance'] / speed
-        print(len(grid_points[grid_points['mins'].isna()]))
+        grid_points['mins'] = grid_points['distance'] / speed
 
         #####################################################
 
+        # Query nearest green area geometries
         t = STRtree(self.green_areas.to_crs(32718)['geometry'])
         q = t.query_nearest(grid_points.to_crs(32718)['geometry'], return_distance=True)
         grid_points['straight_distance'] = q[1]
         grid_points['straight_mins'] = grid_points['straight_distance'] / speed
 
+        # Use NumPy vectorized logic instead of apply
+        straight_mask = grid_points['straight_distance'] < grid_points['distance_to_nearest_node']
+
+        grid_points['straight'] = straight_mask
+        grid_points['mins'] = np.where(straight_mask, grid_points['straight_mins'], grid_points['mins'])
+        grid_points['distance'] = np.where(straight_mask, grid_points['straight_distance'], grid_points['distance'])
+
         #####################################################
 
-        grid_points['straight'] = grid_points.apply(lambda row: row['straight_distance'] < row['distance_to_closest_node'], axis=1)
-        grid_points['minimal_mins'] = grid_points.apply(lambda row: row['straight_mins'] if row['straight'] else row['mins'], axis=1)
-        grid_points['minimal_distance'] = grid_points.apply(lambda row: row['straight_distance'] if row['straight'] else row['total_distance'], axis=1)
+        grid_points = grid_points[['id', 'mins', 'distance', 'green_area', 'project', 'geometry']]
 
-        print(grid_points)
+        self.grid_points_with_project = grid_points.copy()
+        self.grid_points_with_project['wkb'] = self.grid_points_with_project['geometry'].apply(lambda g: g.wkb.hex())
+        del self.grid_points_with_project['geometry']
 
         #####################################################
-        
-        grid_points['mins'] = grid_points['minimal_mins']
-        print(len(grid_points[grid_points['mins'].isna()]))
-        grid_points['distance'] = grid_points['minimal_distance']
-
-        grid_points = grid_points[['mins', 'distance', 'green_area', 'project', 'geometry']]
 
         grid_points['code'] = grid_points.geometry.apply(lambda p: h3.latlng_to_cell(p.y, p.x, self.resolution))
-
         grid_points = grid_points.sort_values(by=['code', 'mins', 'distance'])
-
-        ####################
         
-        mins_m = grid_points.copy()
-        
-        mins_m = mins_m.groupby('code').agg({
+        mins_m = grid_points.groupby('code').agg({
             'mins': 'mean',
             'distance': 'mean',
             'green_area': lambda x: x.mode().iloc[0] if not x.mode().empty else np.nan,
@@ -697,23 +875,6 @@ class Indicator():
         }).reset_index()
 
         print(len(mins_m[mins_m['mins'].isna()]))
-
-        mins_m['geometry'] = mins_m['code'].apply(self.h3_to_polygon)
-
-        # # Round to nearest whole minute (or 0.5, depending on desired precision)
-        # mins_m['rounded_mins'] = mins_m['mins'].round()  # or .round(1) for 0.1 precision
-
-        # # Group and find the most common rounded value per code
-        # modes = mins_m.groupby('code')['rounded_mins'].agg(lambda x: x.mode().iloc[0])
-
-        # # Merge to get original rows that match the mode (on rounded values)
-        # merged = mins_m.merge(modes, on='code', suffixes=('', '_mode'))
-        # filtered = merged[merged['rounded_mins'] == merged['rounded_mins_mode']]
-
-        # # Drop duplicates: keep one row per hex code
-        # mins_m = filtered.drop_duplicates('code')
-        
-        ####################
 
         mins_m['geometry'] = mins_m['code'].apply(self.h3_to_polygon)
         mins_m = gpd.GeoDataFrame(mins_m, geometry='geometry', crs=4326)
@@ -747,7 +908,7 @@ class Indicator():
         overlay = gpd.overlay(mins_m, blocks[['block_density', 'geometry']], how='intersection', keep_geom_type=False)
         # overlay = overlay[~overlay['responsible'].notna()]
         # del overlay['responsible']
-        # overlay = gpd.overlay(hex_upgrade, blocks[['block_density', 'block_area']], how='intersection', keep_geom_type=False)
+        # overlay = gpd.overlay(point_upgrade, blocks[['block_density', 'block_area']], how='intersection', keep_geom_type=False)
 
         print('c')
         # area de cada parte resultante del intersection
@@ -892,76 +1053,49 @@ class Indicator():
     def compute_differences(self):
         # Project percentual change
         
-        left = self.base_indicator.copy()[['code', 'mins', 'green_area', 'geometry']]
+        left = self.base_grid_points_with_project.copy()[['id', 'mins', 'green_area', 'geometry']]
         left = gpd.GeoDataFrame(left, geometry='geometry')
         left.set_crs(4326, inplace=True)
         left.rename(columns={'mins': 'base_mins', 'green_area': 'base_green_area'}, inplace=True)
 
-        right = self.indicator.copy()[['code', 'mins', 'project', 'green_area']]
+        right = self.grid_points_with_project[['id', 'mins', 'project', 'green_area']]
         right.rename(columns={'mins': 'new_mins'}, inplace=True)
 
-        conclusion = left.merge(right, on='code')
+        conclusion = left.merge(right, on='id')
         conclusion['change_mins'] = conclusion['new_mins'] - conclusion['base_mins']
 
         self.conclusion = gpd.GeoDataFrame(conclusion, geometry='geometry')
         self.conclusion.set_crs(4326, inplace=True)
 
-        hex_upgrade = conclusion.copy()
+        point_upgrade = conclusion.copy()
 
         print('a')
         blocks = self.blocks.copy()
 
-        # area de la poblacion
-        blocks.to_crs(32718, inplace=True)
-        blocks['block_area'] = blocks['geometry'].area
-        blocks.to_crs(4326, inplace=True)
-
         print('b')
-
         # densidad de poblacion por block
-        blocks['block_density'] = blocks['density']
-        overlay = gpd.overlay(hex_upgrade, blocks[['block_density', 'geometry']], how='intersection', keep_geom_type=False)
-        # overlay = overlay[~overlay['responsible'].notna()]
-        # del overlay['responsible']
-        # overlay = gpd.overlay(hex_upgrade, blocks[['block_density', 'block_area']], how='intersection', keep_geom_type=False)
+        overlay = gpd.sjoin(point_upgrade, blocks[['density', 'geometry']], predicate='within', how='inner')
 
-        print('c')
-        # area de cada parte resultante del intersection
-        overlay.to_crs(32718, inplace=True)
-        overlay['piece_area'] = overlay['geometry'].area
-        overlay.to_crs(4326, inplace=True)
-
-        print('d')
-        # area total de poblacion en cada hexagono
-        hex_area_occupied = overlay[['code', 'piece_area']].groupby('code').sum().reset_index().rename(columns={'piece_area': 'hex_area_occupied'})
-
-        print('e')
-        # overlay['fraction_area'] = overlay['piece_area'] / overlay['block_area']
-        overlay = pd.merge(overlay, hex_area_occupied, how='left', on='code')
-        overlay['fraction_in_hex'] = overlay['piece_area'] / overlay['hex_area_occupied']
-        overlay['combined_density'] = overlay['fraction_in_hex'] * overlay['block_density']
-        
-        print('f')
-        overlay = overlay[['code', 'combined_density']].groupby('code').sum().reset_index().rename(columns={'combined_density': 'density'})
-        
         print('g')
         # max_density = overlay['density'].max()
         # overlay['density_multiplier'] = 1.0 - np.power(1.0 - np.log(overlay['density'] + 1) / np.log(max_density + 1), 1.5)
         overlay['density_multiplier'] = 1.0
 
         print('h')
-        hex_upgrade = pd.merge(hex_upgrade, overlay[['code', 'density_multiplier']], how='left', on='code')
+        point_upgrade = pd.merge(point_upgrade, overlay[['density_multiplier']], how='left', left_index=True, right_index=True)
 
         print('j')
-        hex_upgrade = hex_upgrade[hex_upgrade['change_mins'] != 0]
+        point_upgrade = point_upgrade[point_upgrade['change_mins'] != 0]
 
         if self.bounds:
-            t = STRtree([self.bounds])
-            tmp = pd.DataFrame(index=t.query(hex_upgrade['geometry'], predicate='intersects')[0])
-            hex_upgrade = pd.merge(hex_upgrade, tmp, left_index=True, right_index=True)
+            point_upgrade = point_upgrade[point_upgrade.within(self.bounds)]
+
+            # t = STRtree([self.bounds])
+            # tmp = pd.DataFrame(index=t.query(point_upgrade['geometry'], predicate='intersects')[0])
+            # point_upgrade = pd.merge(point_upgrade, tmp, left_index=True, right_index=True)
 
         # in case a busstop is deleted by a project deletion change, it sets it's responsible project
-        def hex_change(row):
+        def point_change(row):
             responsible = row['project']
             if row['green_area'] != row['base_green_area']:
                 if row['change_mins'] > 0:
@@ -987,23 +1121,72 @@ class Indicator():
                         responsible = modifications.iloc[0]['project']
             return responsible
 
-        hex_upgrade['responsible'] = hex_upgrade.apply(hex_change, axis=1)
+        print('k')
+        green_area_point_upgrade = point_upgrade.copy()
+        green_area_point_upgrade['green_area_project'] = green_area_point_upgrade.apply(point_change, axis=1)
 
-        hex_upgrade['project'] = hex_upgrade['responsible']
-        del hex_upgrade['responsible']
-
-        pro_upgrade = hex_upgrade[['project', 'new_mins', 'base_mins']].reset_index(drop=True)
-        pro_upgrade = pro_upgrade.groupby('project', dropna=False)
-        pro_upgrade = pro_upgrade.sum()
-        pro_upgrade = pro_upgrade.reset_index()
-        # pro_upgrade['other_new_mins'] = pro_upgrade.apply(lambda row: pro_upgrade[pro_upgrade['project'] != row['project']]['new_mins'].sum(), axis=1)
-        # pro_upgrade['other_base_mins'] = pro_upgrade.apply(lambda row: pro_upgrade[pro_upgrade['project'] != row['project']]['base_mins'].sum(), axis=1)
-        pro_upgrade.dropna(subset=['project'], inplace=True)
+        # point_upgrade['density_multiplier'] = point_upgrade['density_multiplier'].fillna(0)
+        # point_upgrade['new_mins'] = point_upgrade['base_mins'] + point_upgrade['change_mins'] * point_upgrade['density_multiplier']
         
-        pro_upgrade['percentage'] = pro_upgrade.apply(lambda row: 100.0 * (1.0 - row['new_mins'] / row['base_mins']), axis=1)
+        green_area_pro_upgrade = green_area_point_upgrade[['green_area_project', 'new_mins', 'base_mins']].reset_index(drop=True)
+        green_area_pro_upgrade = green_area_pro_upgrade.groupby('green_area_project', dropna=False)
+        green_area_pro_upgrade = green_area_pro_upgrade.sum()
+        green_area_pro_upgrade = green_area_pro_upgrade.reset_index()
+        green_area_pro_upgrade.dropna(subset=['green_area_project'], inplace=True)
 
-        df_list = pd.DataFrame({'project': list(self.counting_projects)})
-        result = pd.merge(df_list, pro_upgrade, on='project', how='left')
+        green_area_pro_upgrade['percentage'] = green_area_pro_upgrade.apply(lambda row: 100.0 * (1.0 - row['new_mins'] / row['base_mins']), axis=1)
+
+        #####################
+
+        print('l')
+        street_point_upgrade = point_upgrade.copy()
+        street_point_upgrade = street_point_upgrade.merge(self.grid_point_projects, on='id').rename(columns={'path_projects_mp': 'street_project'})
+
+        print('m')
+        street_pro_upgrade = street_point_upgrade[['street_project', 'new_mins', 'base_mins']].reset_index(drop=True)
+        street_pro_upgrade = street_pro_upgrade.explode('street_project').reset_index(drop=True)
+        street_pro_upgrade = street_pro_upgrade.groupby('street_project', dropna=False)
+        street_pro_upgrade = street_pro_upgrade.sum()
+        street_pro_upgrade = street_pro_upgrade.reset_index()
+        street_pro_upgrade.dropna(subset=['street_project'], inplace=True)
+
+        print('n')
+        street_pro_upgrade['percentage'] = street_pro_upgrade.apply(lambda row: 100.0 * (1.0 - row['new_mins'] / row['base_mins']), axis=1)
+
+        #####################
+
+        print('o')
+
+        result = pd.DataFrame({'project': list(self.counting_projects), 'percentage': 0})
+
+        if green_area_pro_upgrade['green_area_project'].notna().any():
+            # green_area_pro_upgrade['green_area_project'] = green_area_pro_upgrade['green_area_project'].astype(str)
+            result = result.merge(
+                green_area_pro_upgrade[['green_area_project', 'percentage']]
+                .rename(columns={'green_area_project': 'project', 'percentage': 'percentage_sum'}),
+                how='left',
+                on='project'
+            )
+            
+            result['percentage'] += result['percentage_sum'].fillna(0)
+            del result['percentage_sum']
+
+        print('p')
+        if street_pro_upgrade['street_project'].notna().any():
+            # street_pro_upgrade['street_project'] = street_pro_upgrade['street_project'].astype(str)
+            result = result.merge(
+                street_pro_upgrade[['street_project', 'percentage']]
+                .rename(columns={'street_project': 'project', 'percentage': 'percentage_sum'}),
+                how='left',
+                on='project'
+            )
+
+            result['percentage'] += result['percentage_sum'].fillna(0)
+            del result['percentage_sum']
+
+        print(result)
+
+        print('q')
         result['percentage'] = round(result['percentage'].fillna(0), 2)
         result = result[['project', 'percentage']]
         result['project_name'] = result['project'].apply(lambda project: self.projects_name[project])
@@ -1080,29 +1263,25 @@ class Indicator():
         else:
             output_path = f'/usr/src/app/shared/green_areas_proximity/result{self.result}.json'
 
-        self.indicator.replace({np.nan: None}, inplace=True)
-
-        df_json = list(self.indicator.T.to_dict().values())
-        # df_json_str = json.dumps(df_json, indent=4)     # now useless as the str of the json is generated below to consider extra data
-
-        result_json = {
-            'indicator': df_json,
-        }
-
-        if len(self.secondary_data) > 0:
-            print('before assign', len(self.secondary_data))
-            result_json['resume'] = self.secondary_data
-            print('after assign', len(result_json['resume']))
-
-        if self.bounds and self.bounds_border:
-            result_json['bounds_border'] = self.bounds_border.wkb.hex()
-
-        end = time.time()
-        print('time:', end - self.init_time)
-        result_json['time'] = end - self.init_time
-
-        if not self.base and not self.local:
+        if not self.base:
             try:
+                self.indicator.replace({np.nan: None}, inplace=True)
+                df_json = self.indicator.to_dict(orient='records')
+                
+                result_json = {
+                    'indicator': df_json,
+                }
+
+                if len(self.secondary_data) > 0:
+                    result_json['resume'] = self.secondary_data
+
+                if self.bounds and self.bounds_border:
+                    result_json['bounds_border'] = self.bounds_border.wkb.hex()
+                
+                end = time.time()
+                print('time:', end - self.init_time)
+                result_json['time'] = end - self.init_time
+                
                 url = f'{self.server_address}/api/result/{self.result}/set_data/'
                 headers = {'Content-Type': 'application/json'}
                 r = requests.post(url, json=result_json, headers=headers)
@@ -1110,13 +1289,20 @@ class Indicator():
             except Exception as e:
                 print('exporting data exception:', e)
         else:
+            self.grid_points_with_project.replace({np.nan: None}, inplace=True)
+            df_json = self.grid_points_with_project.to_dict(orient='records')
+
+            result_json = {
+                'points': df_json
+            }
+
             output_dir = os.path.dirname(output_path)
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
 
             result_json_str = json.dumps(result_json, indent=4)
             with open(output_path, "w") as file:
-                file.write(result_json_str)
+                file.write(result_json_str)            
     
     ############################################################
 
@@ -1141,7 +1327,7 @@ class Indicator():
                 self.set_border('box')
                 self.compute_histogram()
 
-                if not self.base and len(self.projects) > 0 and not self.base_indicator.empty:
+                if not self.base and len(self.projects) > 0 and len(self.counting_projects) > 0 and not self.base_grid_points_with_project.empty:
                     self.compute_differences()
             except Exception as e:
                 print('exception in execute_process:',e)

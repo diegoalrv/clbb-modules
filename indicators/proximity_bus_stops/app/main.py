@@ -1,4 +1,4 @@
-from indicators.proximity_bus_stops.app.indicator_base import Indicator
+from indicator import Indicator
 
 def main():
     indicator = Indicator()

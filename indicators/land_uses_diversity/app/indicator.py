@@ -51,8 +51,6 @@ class Indicator():
         self.resolution = int(os.getenv('resolution', 10))
         self.x_spacing = int(os.getenv('x_spacing', 50))
         self.y_spacing = int(os.getenv('y_spacing', 50))
-        self.geo_input = os.getenv('geo_input', 'False') == 'True'
-        self.geo_output = os.getenv('geo_output', 'False') == 'True'
         self.local = os.getenv('local', 'False') == 'True'
         self.cache = os.getenv('cache', 'True') == 'True'
         self.geometry = os.getenv('geometry', 'False') == 'True'
@@ -77,6 +75,8 @@ class Indicator():
         norm=plt.Normalize(min(cvals),max(cvals))
         tuples = list(zip(map(norm,cvals), colors))
         self.cmap = matplotlib.colors.LinearSegmentedColormap.from_list("", tuples)
+
+        self.neighborhood = os.getenv('neighborhood', None)
 
         try:
             projects = json.loads(os.getenv('projects', '[]'))
@@ -259,15 +259,19 @@ class Indicator():
         environment_id = scenario['environment']
         user = self.load_item('user', self.user)
 
-        imported_projects = [p['id'] for p in scenario['imported_projects']]
-        self.projects = [p for p in self.projects if p != 3 and p in imported_projects]
-
-        self.projects_name = {p['id']: p['name'] for p in scenario['imported_projects']}
-        self.counting_projects = set()
-
-        print(self.projects)
+        if self.neighborhood:
+            neighborhood = self.load_item('neighborhood', self.neighborhood)
+            neighborhood_gdf = gpd.GeoDataFrame.from_features([neighborhood], crs=4326)
+            self.bounds = neighborhood_gdf.iloc[0]['geometry']
 
         if not self.base:
+            imported_projects = [p['id'] for p in scenario['imported_projects']]
+            self.projects = [p for p in self.projects if p in imported_projects]
+            print(self.projects)
+
+            self.projects_name = {p['id']: p['name'] for p in scenario['imported_projects']}
+            self.counting_projects = set()
+
             indicator, landuse_id, resume = self.load_base_indicator()
             self.base_indicator = indicator
             # self.base_landuse_id = landuse_id
@@ -304,7 +308,7 @@ class Indicator():
         return data
 
     def load_base_indicator(self):
-        input_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/base{"_geo" if self.geo_output else ""}.json'
+        input_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/base.json'
 
         if not os.path.exists(input_path):
             print(f"El archivo {input_path} no existe.")
@@ -315,13 +319,10 @@ class Indicator():
 
         base_indicator_json = json.loads(df_json_str)
 
-        if self.geo_output:
-            base_indicator = gpd.GeoDataFrame.from_features(base_indicator_json['features'])
-        else:
-            base_indicator = pd.DataFrame.from_records(base_indicator_json['indicator'])
-            base_indicator['geometry'] = base_indicator['wkb'].apply(lambda g: wkb.loads(g))
-            del base_indicator['wkb']
-            base_indicator = gpd.GeoDataFrame(base_indicator, geometry='geometry')
+        base_indicator = pd.DataFrame.from_records(base_indicator_json['indicator'])
+        base_indicator['geometry'] = base_indicator['wkb'].apply(lambda g: wkb.loads(g))
+        del base_indicator['wkb']
+        base_indicator = gpd.GeoDataFrame(base_indicator, geometry='geometry')
         
         if 'resume' in base_indicator_json.keys():
             resume = base_indicator_json['resume']
@@ -348,7 +349,7 @@ class Indicator():
     def load_grid_points(self):
         grid_points = None
         
-        input_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}{"_geo" if self.geo_input else ""}.json'
+        input_path = f'/usr/src/app/shared/zone_{self.zone}/grid_points/spacing_{self.x_spacing}_{self.y_spacing}.json'
         print(f'opening path {input_path}')
         if os.path.exists(input_path):
             with open(input_path, "r") as file:
@@ -581,26 +582,22 @@ class Indicator():
         #########################################################################
 
         left = base_gdf_area_by_use[['new_use', 'area_by_use']].rename(columns={'area_by_use': 'base_area_by_use'})
-        print(left)
         right = gdf_area_by_use[['new_use', 'area_by_use']].rename(columns={'area_by_use': 'new_area_by_use'})
-        print(right)
         change_gdf = pd.merge(left, right, how='outer', on='new_use').fillna(0)
-        print(change_gdf)
 
         change_gdf['change_percentage_by_use'] = round((change_gdf['new_area_by_use'] / change_gdf['base_area_by_use'] - 1.0) * 100.0, 1)
         change_gdf['change_area_by_use'] = round(change_gdf['new_area_by_use'] - change_gdf['base_area_by_use'], 1)
 
         area_change_gdf = change_gdf[['new_use', 'change_area_by_use']]
         area_change_gdf = area_change_gdf[area_change_gdf['change_area_by_use'] != 0]
-        print(area_change_gdf)
         area_change_gdf.rename(columns={'new_use': 'label', 'change_area_by_use': 'value'}, inplace=True)
+        area_change_gdf['value'] = area_change_gdf['value'].apply(lambda x: f"{int(round(x)):,}".replace(",", "."))
         area_change_gdf = area_change_gdf.to_dict(orient='records')
         
         percentage_change_gdf = change_gdf[['new_use', 'change_percentage_by_use']]
         percentage_change_gdf.replace([np.inf, -np.inf], np.nan, inplace=True)
         percentage_change_gdf.dropna(inplace=True)
         percentage_change_gdf = percentage_change_gdf[percentage_change_gdf['change_percentage_by_use'] != 0]
-        print(percentage_change_gdf)
         percentage_change_gdf = percentage_change_gdf[percentage_change_gdf['change_percentage_by_use'].notna()]
         percentage_change_gdf.rename(columns={'new_use': 'label', 'change_percentage_by_use': 'value'}, inplace=True)
         percentage_change_gdf = percentage_change_gdf.to_dict(orient='records')
@@ -610,7 +607,7 @@ class Indicator():
             'type': 'project_change',
             'data': area_change_gdf,
             'positive': True,
-            'name': 'Cambio absoluto',
+            'name': 'Aumento en metros cuadrados del área de usos de suelo',
             'unit': 'm²',
             'unit_short': 'm²'
         })
@@ -620,114 +617,10 @@ class Indicator():
             'type': 'project_change',
             'data': percentage_change_gdf,
             'positive': True,
-            'name': 'Cambio porcentual',
+            'name': 'Aumento porcentual del área de usos de suelo',
             'unit': '%',
             'unit_short': '%'
         })
-        pass
-
-    def compute_upgrade(self):
-        h3_cells = self.h3_cells
-
-        base_land_uses = self.base_land_uses
-        base_overlay_gdf = gpd.overlay(h3_cells, base_land_uses, how='intersection', keep_geom_type=False)
-
-        deleted_land_uses = self.deleted_land_uses
-        changes_land_uses = pd.concat([self.land_uses, deleted_land_uses])
-        overlay_gdf = gpd.overlay(h3_cells, changes_land_uses, how='intersection', keep_geom_type=False)
-
-        # grouped = overlay_gdf.dropna(subset='project').groupby('code')
-
-        # #########################################################################
-
-        # mapping_df = pd.DataFrame(index=self.mapping.keys(), data=self.mapping.values()).rename(columns={0: 'new_use'})
-        # t = STRtree([self.bounds])
-
-        # def simplify_string(s: str):
-        #     trans_tab = dict.fromkeys(map(ord, u'\u0301\u0308'), None)
-        #     return normalize('NFKC', normalize('NFKD', s.lower()).translate(trans_tab))
-
-        # gdf = self.land_uses.reset_index()
-
-        # if self.bounds:
-        #     q = t.query(gdf['geometry'], predicate='intersects')
-        #     tmp = pd.DataFrame(index=q[0])
-        #     gdf = pd.merge(gdf, tmp, left_index=True, right_index=True)
-        #     gdf = gpd.overlay(gdf, gpd.GeoDataFrame(geometry=[self.bounds]), how='intersection', keep_geom_type=False)
-
-        # gdf['area'] = gdf.to_crs(32718)['geometry'].area
-        # gdf['simple_use'] = gdf['use'].apply(simplify_string)
-        # gdf = pd.merge(gdf, mapping_df, how='left', left_on='simple_use', right_index=True)
-        # del gdf['simple_use']
-
-        # gdf_area_by_use = gdf.groupby(['new_use']).agg({'area': 'sum'}).reset_index().rename(columns={'area': 'area_by_use'})
-
-        # #########################################################################
-
-        # base_gdf = self.base_land_uses.reset_index()
-
-        # if self.bounds:
-        #     q = t.query(base_gdf['geometry'], predicate='intersects')
-        #     tmp = pd.DataFrame(index=q[0])
-        #     base_gdf = pd.merge(base_gdf, tmp, left_index=True, right_index=True)
-        #     base_gdf = gpd.overlay(base_gdf, gpd.GeoDataFrame(geometry=[self.bounds]), how='intersection', keep_geom_type=False)
-
-        # base_gdf['area'] = base_gdf.to_crs(32718)['geometry'].area
-        # base_gdf['simple_use'] = base_gdf['use'].apply(simplify_string)
-        # base_gdf = pd.merge(base_gdf, mapping_df, how='left', left_on='simple_use', right_index=True)
-        # del base_gdf['simple_use']
-
-        # base_gdf_area_by_use = base_gdf.groupby(['new_use']).agg({'area': 'sum'}).reset_index().rename(columns={'area': 'area_by_use'})
-
-        # #########################################################################
-
-        # left = base_gdf_area_by_use[['new_use', 'area_by_use']].rename(columns={'area_by_use': 'base_area_by_use'})
-        # print(left)
-        # right = gdf_area_by_use[['new_use', 'area_by_use']].rename(columns={'area_by_use': 'new_area_by_use'})
-        # print(right)
-        # change_gdf = pd.merge(left, right, how='outer', on='new_use').fillna(0)
-        # print(change_gdf)
-
-        # change_gdf['change_percentage_by_use'] = (change_gdf['new_area_by_use'] / change_gdf['base_area_by_use'] - 1.0) * 100.0
-        # change_gdf['change_area_by_use'] = change_gdf['new_area_by_use'] - change_gdf['base_area_by_use']
-
-        # change_gdf['change_area_by_use'] = round(change_gdf['change_area_by_use'], 1)
-        # change_gdf['change_percentage_by_use'] = round(change_gdf['change_percentage_by_use'], 1)
-
-        # area_change_gdf = change_gdf[['new_use', 'change_area_by_use']]
-        # area_change_gdf = area_change_gdf[area_change_gdf['change_area_by_use'] != 0]
-        # print(area_change_gdf)
-        # area_change_gdf.rename(columns={'new_use': 'label', 'change_area_by_use': 'value'}, inplace=True)
-        # area_change_gdf = area_change_gdf.to_dict(orient='records')
-        
-        # percentage_change_gdf = change_gdf[['new_use', 'change_percentage_by_use']]
-        # percentage_change_gdf.replace([np.inf, -np.inf], np.nan, inplace=True)
-        # percentage_change_gdf.dropna(inplace=True)
-        # percentage_change_gdf = percentage_change_gdf[percentage_change_gdf['change_percentage_by_use'] != 0]
-        # print(percentage_change_gdf)
-        # percentage_change_gdf = percentage_change_gdf[percentage_change_gdf['change_percentage_by_use'].notna()]
-        # percentage_change_gdf.rename(columns={'new_use': 'label', 'change_percentage_by_use': 'value'}, inplace=True)
-        # percentage_change_gdf = percentage_change_gdf.to_dict(orient='records')
-
-        # self.secondary_data.append({
-        #     'index': 2,
-        #     'type': 'project_change',
-        #     'data': area_change_gdf,
-        #     'positive': True,
-        #     'name': 'Cambio absoluto',
-        #     'unit': 'm²',
-        #     'unit_short': 'm²'
-        # })
-
-        # # self.secondary_data.append({
-        # #     'index': 3,
-        # #     'type': 'project_change',
-        # #     'data': percentage_change_gdf,
-        # #     'positive': True,
-        # #     'name': 'Cambio porcentual',
-        # #     'unit': '%',
-        # #     'unit_short': '%'
-        # # })
         pass
 
     def get_color(self, value, vmin, vmax, alpha, cmap, max_alpha=255):
@@ -852,9 +745,8 @@ class Indicator():
             # is for geometry data, but here we make it str in order to serialize it
             # also in case of uploading to database, postgres receives the geometry's wkt as string and automatically converts to wkb
 
-            if not self.geo_output:
-                gdf['wkb'] = gdf['geometry'].apply(lambda g: g.wkb.hex())
-                del gdf['geometry']
+            gdf['wkb'] = gdf['geometry'].apply(lambda g: g.wkb.hex())
+            del gdf['geometry']
 
         self.indicator = gdf
         pass
@@ -865,15 +757,11 @@ class Indicator():
         print('exporting data')
 
         if self.base:
-            output_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/base{"_geo" if self.geo_output else ""}.json'
+            output_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/base.json'
         else:
-            output_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/base{self.result}{"_geo" if self.geo_output else ""}.json'
+            output_path = f'/usr/src/app/shared/zone_{self.zone}/land_uses_diversity/base{self.result}.json'
 
-        if self.geo_output:
-            df_json_str = self.indicator.to_json(indent=4)
-        else:
-            df_json_str = self.indicator.to_json(orient='records')
-
+        df_json_str = self.indicator.to_json(orient='records')
         df_json = json.loads(df_json_str) # for posting with arg json=df_geojson
 
         result_json = {
@@ -944,7 +832,6 @@ class Indicator():
 
                 if not self.base and not self.base_indicator.empty:
                     self.compute_differences()
-                    # self.compute_upgrade()
             except Exception as e:
                 print('exception in execute_process:',e)
                 raise e

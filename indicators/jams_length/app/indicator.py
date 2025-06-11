@@ -3,9 +3,8 @@ import geopandas as gpd
 import numpy as np
 import json
 import matplotlib.pyplot as plt
-from shapely import wkb, STRtree, distance
-from shapely.geometry import Polygon, Point, box
-from shapely.prepared import prep
+from shapely import wkb, STRtree
+from shapely.geometry import box
 
 import os
 import requests
@@ -56,7 +55,8 @@ class Indicator():
         self.pm = os.getenv('pm', 'False') == 'True' or os.getenv('pm', 'False') == 'true'
 
         self.vmin = int(os.getenv('vmin', 0))
-        self.vmax = int(os.getenv('vmax', 60))
+        self.vmax = int(os.getenv('vmax', 100))
+        self.interval_size = int(os.getenv('interval_size', 25))
         # cmap_name = os.getenv('cmap', 'YlOrRd')
         cmap_name = f'YlOrRd_r'
         self.cmap = plt.cm.get_cmap(cmap_name)
@@ -86,7 +86,7 @@ class Indicator():
             self.waze_jams = self.load_base_indicator()
             return
         else:
-            path = f'/usr/src/app/shared/assets/jams_length.parquet'
+            path = f'/usr/src/app/shared/assets/delay_{"am" if not self.pm else "pm"}.parquet'
             if os.path.exists(path):
                 try:
                     self.waze_jams = gpd.read_parquet(path)
@@ -123,7 +123,7 @@ class Indicator():
         print("computing indicator")
 
         jams = self.waze_jams
-        jams['display_text'] = jams['speed'].apply(lambda x: f"Speed: {round(x)} {'km/h'}")
+        jams['display_text'] = jams['speed'].apply(lambda x: f"Velocidad promedio: {round(x)} {'km/h'}")
         
         self.indicator = jams
         pass
@@ -201,6 +201,80 @@ class Indicator():
     
     ############################################################
 
+    def compute_histogram(self):
+        # Residents histogram
+
+        gdf = self.indicator.reset_index()
+        gdf['length'] = gdf.set_crs(4326).to_crs(32718).geometry.length
+
+        print(gdf)
+
+        if not self.base and self.bounds:
+            t = STRtree([self.bounds])
+            tmp = pd.DataFrame(index=t.query(gdf['geometry'], predicate='intersects')[0])
+            gdf = pd.merge(gdf, tmp, left_index=True, right_index=True)
+
+        #################################################################################
+
+        interval_size = self.interval_size
+        labels_count = int(self.vmax / interval_size) + 1
+
+        labels = [f'{round(self.vmin + i * interval_size)} - {round(self.vmin + (i + 1) * interval_size)}' for i in range(labels_count)]
+        labels[-1] = f'> {round(self.vmin + (labels_count - 1) * interval_size)}'
+
+        labels = [{
+            # 'label': f'{round(self.vmin + i * interval_size)} - {round(self.vmin + (i + 1) * interval_size)}',
+            'label': labels[i],
+            'index': i,
+            'group': i,
+            'color': self.get_color(self.vmin + (i + 0.5) * interval_size, self.vmin, self.vmax, 1, self.cmap)
+        } for i in range(labels_count)]
+        histogram_labels = pd.DataFrame.from_records(labels)
+
+        #################################################################################
+
+
+        histogram_data = gdf[['length']].reset_index(drop=True)
+
+        histogram_data['group'] = (histogram_data['length'] / interval_size).clip(upper=labels_count - 1).astype(int)
+        
+        histogram_data = histogram_data['group'].value_counts().reset_index().rename(columns={'count': 'value'})
+
+        im = histogram_data['value'].idxmax()
+        histogram_data.loc[im, 'value'] = np.ceil(histogram_data.loc[im, 'value'])
+        histogram_data = histogram_data.round()
+
+        histogram_data = histogram_labels.merge(histogram_data, how='left', on='group')
+        
+        histogram_data.fillna(0, inplace=True)
+        histogram_data = histogram_data[['label', 'value', 'index', 'color']]
+        histogram_data['index'] = histogram_data['index'].astype(int)
+        histogram_data = histogram_data.to_dict(orient='records')
+
+        histogram = {}
+        histogram['index'] = 1
+        histogram['type'] = 'histogram'
+        histogram['data'] = histogram_data
+        histogram['positive'] = False
+        histogram['name'] = 'Histograma longitud'
+        histogram['unit'] = 'metros'
+        histogram['unit_short'] = 'm'
+        histogram['value_unit'] = 'registros'
+        histogram['value_unit_short'] = 'reg'
+
+        self.secondary_data.append(histogram)
+
+        # Color labels
+        color_labels = labels.copy()
+
+        legend = {}
+        legend['type'] = 'legend'
+        legend['data'] = color_labels
+        legend['name'] = 'Leyenda'
+        
+        self.secondary_data.append(legend)
+        pass
+
     def execute(self):
         try:
             try:
@@ -218,6 +292,8 @@ class Indicator():
             try:
                 if self.indicator.empty:
                     self.execute_process()
+                
+                self.compute_histogram()
             except Exception as e:
                 print('exception in execute_process:',e)
                 raise e
